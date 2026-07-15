@@ -6,29 +6,39 @@ import Commands.AnalyzeCommand
 class PanelOptimizerWorkbench(Gui.Workbench):
 
     MenuText = "PanelOptimizer"
-    ToolTip = "3D Panel Optimization for FDM Printing"
+    ToolTip = "Prepare large artistic panels for FDM printing"
 
     Icon = ""
+
+    Toolbox = [
+        "PanelOptimizer_Analyze",
+    ]
+
+    MenuItems = [
+        "PanelOptimizer_Analyze",
+    ]
 
     def Initialize(self):
 
         self.appendToolbar(
             "PanelOptimizer",
-            ["PanelOptimizer_Analyze"]
+            self.Toolbox
         )
 
         self.appendMenu(
             "PanelOptimizer",
-            ["PanelOptimizer_Analyze"]
+            self.MenuItems
         )
 
-        print("PanelOptimizer initialized")
+        Gui.addLanguagePath("")
+
+        print("PanelOptimizer Workbench initialized")
 
     def Activated(self):
-        pass
+        print("PanelOptimizer activated")
 
     def Deactivated(self):
-        pass
+        print("PanelOptimizer deactivated")
 
 
 Gui.addWorkbench(PanelOptimizerWorkbench())
