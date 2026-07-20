@@ -1,37 +1,128 @@
-import FreeCAD as App
-import FreeCADGui as Gui
-from Core.Analyzer import Analyzer
+# ***************************************************************************
+# *                                                                         *
+# *  PanelOptimizer                                                         *
+# *                                                                         *
+# *  AnalyzeCommand.py                                                      *
+# *                                                                         *
+# *  Version : V0.40B                                                       *
+# *                                                                         *
+# ***************************************************************************
+
+import FreeCAD
+import FreeCADGui
+
+from Analyzer.PanelAnalyzer import PanelAnalyzer
+
 
 class AnalyzeCommand:
+
     def GetResources(self):
-        return {"Pixmap":"","MenuText":"Analyze","ToolTip":"Analyze selected object"}
 
-    def Activated(self):
-        selection = Gui.Selection.getSelection()
-        if not selection:
-            App.Console.PrintError("No object selected.\n")
-            return
-        result = Analyzer().analyze(selection[0])
-        bb = result.bounding_box
+        return {
+            "Pixmap": "",
+            "MenuText": "Analyze Panel",
+            "ToolTip": (
+                "Analyze the selected panel and build the complete "
+                "geometrical analysis."
+            )
+        }
 
-        App.Console.PrintMessage("\n=====================================\n")
-        App.Console.PrintMessage(" PANEL OPTIMIZER V0.07\n")
-        App.Console.PrintMessage("=====================================\n")
-        App.Console.PrintMessage(f"Object   : {result.object_name}\n")
-        App.Console.PrintMessage(f"Faces    : {result.face_count}\n")
-        App.Console.PrintMessage(f"Edges    : {result.edge_count}\n")
-        App.Console.PrintMessage(f"Vertices : {result.vertex_count}\n")
-        App.Console.PrintMessage(f"BBox     : {bb.XLength:.2f} x {bb.YLength:.2f} x {bb.ZLength:.2f} mm\n")
-        App.Console.PrintMessage(f"Volume   : {result.volume:.2f} mm³\n")
-        App.Console.PrintMessage(f"Surface  : {result.area:.2f} mm²\n\n")
-        App.Console.PrintMessage("Faces\n--------------------------\n")
-        for face in result.faces:
-            App.Console.PrintMessage(
-                f"Face {face.index:4d} : {face.type:12s} "
-                f"A={face.area:10.2f} "
-                f"N=({face.normal_x:5.2f},{face.normal_y:5.2f},{face.normal_z:5.2f})\n")
+    # ------------------------------------------------------------------
 
     def IsActive(self):
-        return App.ActiveDocument is not None
 
-Gui.addCommand("PanelOptimizer_Analyze", AnalyzeCommand())
+        if FreeCAD.ActiveDocument is None:
+            return False
+
+        if len(FreeCADGui.Selection.getSelection()) != 1:
+            return False
+
+        return True
+
+    # ------------------------------------------------------------------
+
+    def Activated(self):
+
+        FreeCAD.Console.PrintMessage("\n")
+        FreeCAD.Console.PrintMessage(
+            "=============================================\n"
+        )
+        FreeCAD.Console.PrintMessage(
+            " PANEL OPTIMIZER - ANALYZE\n"
+        )
+        FreeCAD.Console.PrintMessage(
+            "=============================================\n"
+        )
+
+        selection = FreeCADGui.Selection.getSelection()
+
+        if len(selection) != 1:
+
+            FreeCAD.Console.PrintError(
+                "Please select one solid.\n"
+            )
+            return
+
+        obj = selection[0]
+
+        if not hasattr(obj, "Shape"):
+
+            FreeCAD.Console.PrintError(
+                "Selected object has no Shape.\n"
+            )
+            return
+
+        shape = obj.Shape
+
+        if shape.isNull():
+
+            FreeCAD.Console.PrintError(
+                "Shape is empty.\n"
+            )
+            return
+
+        FreeCAD.Console.PrintMessage(
+            f"Object : {obj.Label}\n"
+        )
+
+        bbox = shape.BoundBox
+
+        FreeCAD.Console.PrintMessage(
+            f"Bounding Box : "
+            f"{bbox.XLength:.2f} x "
+            f"{bbox.YLength:.2f} x "
+            f"{bbox.ZLength:.2f} mm\n"
+        )
+
+        if bbox.XLength > 330.0 or bbox.YLength > 330.0:
+
+            FreeCAD.Console.PrintWarning(
+                "\n"
+                "WARNING :\n"
+                "This object cannot be printed in one piece.\n"
+                "Optimization will search a valid split.\n\n"
+            )
+
+        analyzer = PanelAnalyzer(shape)
+
+        result = analyzer.run()
+
+        FreeCAD.Console.PrintMessage("\n")
+        FreeCAD.Console.PrintMessage(
+            "Analysis completed.\n"
+        )
+
+        if result is not None:
+
+            if hasattr(result, "printSummary"):
+                result.printSummary()
+
+        FreeCAD.Console.PrintMessage(
+            "=============================================\n"
+        )
+
+    # ------------------------------------------------------------------
+
+    def GetClassName(self):
+
+        return "Gui::PythonCommand"

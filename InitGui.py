@@ -1,44 +1,114 @@
-import FreeCADGui as Gui
+# ***************************************************************************
+# *                                                                         *
+# *  PanelOptimizer Workbench                                               *
+# *  Version : V0.40B                                                       *
+# *                                                                         *
+# *  FreeCAD 1.1                                                            *
+# *                                                                         *
+# ***************************************************************************
 
-import Commands.AnalyzeCommand
+import FreeCAD
+import FreeCADGui
 
 
-class PanelOptimizerWorkbench(Gui.Workbench):
+class PanelOptimizerWorkbench(FreeCADGui.Workbench):
 
-    MenuText = "PanelOptimizer"
-    ToolTip = "Prepare large artistic panels for FDM printing"
+    MenuText = "Panel Optimizer"
+
+    ToolTip = (
+        "Optimize artistic panels for invisible assembly "
+        "and 3D printing."
+    )
 
     Icon = ""
 
-    Toolbox = [
-        "PanelOptimizer_Analyze",
-    ]
-
-    MenuItems = [
-        "PanelOptimizer_Analyze",
-    ]
+    ########################################################################
+    # Initialize
+    ########################################################################
 
     def Initialize(self):
 
-        self.appendToolbar(
-            "PanelOptimizer",
-            self.Toolbox
+        # ---------------------------------------------------------------
+        # Import commands
+        # ---------------------------------------------------------------
+
+        from Commands.AnalyzeCommand import AnalyzeCommand
+
+        FreeCADGui.addCommand(
+            "PanelOptimizer_Analyze",
+            AnalyzeCommand()
         )
+
+        # ---------------------------------------------------------------
+        # Toolbars
+        # ---------------------------------------------------------------
+
+        self.appendToolbar(
+            "Panel Optimizer",
+            [
+                "PanelOptimizer_Analyze",
+            ]
+        )
+
+        # ---------------------------------------------------------------
+        # Menus
+        # ---------------------------------------------------------------
 
         self.appendMenu(
-            "PanelOptimizer",
-            self.MenuItems
+            "Panel Optimizer",
+            [
+                "PanelOptimizer_Analyze",
+            ]
         )
 
-        Gui.addLanguagePath("")
+        FreeCAD.Console.PrintMessage(
+            "\n"
+            "=========================================\n"
+            " PanelOptimizer Workbench V0.40B\n"
+            " FreeCAD 1.1\n"
+            "=========================================\n"
+        )
 
-        print("PanelOptimizer Workbench initialized")
+    ########################################################################
+    # Activated
+    ########################################################################
 
     def Activated(self):
-        print("PanelOptimizer activated")
+
+        FreeCAD.Console.PrintMessage(
+            "PanelOptimizer activated.\n"
+        )
+
+    ########################################################################
+    # Deactivated
+    ########################################################################
 
     def Deactivated(self):
-        print("PanelOptimizer deactivated")
+
+        FreeCAD.Console.PrintMessage(
+            "PanelOptimizer deactivated.\n"
+        )
+
+    ########################################################################
+    # Context Menu
+    ########################################################################
+
+    def ContextMenu(self, recipient):
+
+        self.appendContextMenu(
+            "Panel Optimizer",
+            [
+                "PanelOptimizer_Analyze",
+            ]
+        )
+
+    ########################################################################
+    # Class Name
+    ########################################################################
+
+    def GetClassName(self):
+
+        return "Gui::PythonWorkbench"
 
 
-Gui.addWorkbench(PanelOptimizerWorkbench())
+FreeCADGui.addWorkbench(PanelOptimizerWorkbench())
