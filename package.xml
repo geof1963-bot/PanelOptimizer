@@ -1,0 +1,57 @@
+<?xml version="1.0" encoding="UTF-8"?>
+
+<package format="1">
+
+    <name>PanelOptimizer</name>
+
+    <description>
+        FreeCAD Workbench for preparing large artistic panels for FDM 3D printing.
+        The workbench analyses geometry, computes optimized split paths,
+        generates invisible joinery and exports printable STL parts.
+    </description>
+
+    <version>3.01.0</version>
+
+    <date>2026-07-22</date>
+
+    <maintainer email="">
+        Geoffroy
+    </maintainer>
+
+    <license>GPL-3.0-or-later</license>
+
+    <url type="repository">
+        https://github.com/geof1963-bot/PanelOptimizer
+    </url>
+
+    <url type="website">
+        https://github.com/geof1963-bot/PanelOptimizer
+    </url>
+
+    <content>
+
+        <workbench>
+
+            <name>PanelOptimizer</name>
+
+            <classname>PanelOptimizerWorkbench</classname>
+
+            <subdirectory>.</subdirectory>
+
+            <icon>Gui/Resources/icons/PanelOptimizer.svg</icon>
+
+            <description>
+                Intelligent preparation of artistic panels for multi-part 3D printing.
+            </description>
+
+        </workbench>
+
+    </content>
+
+    <dependencies>
+
+        <dependency type="python">FreeCAD</dependency>
+
+    </dependencies>
+
+</package>

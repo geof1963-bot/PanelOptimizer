@@ -1,0 +1,32 @@
+[general]
+name = PanelOptimizer
+title = PanelOptimizer Workbench
+description = Intelligent preparation of large artistic panels for FDM 3D printing.
+version = 3.01.0
+date = 2026-07-22
+author = Geoffroy
+maintainer = Geoffroy
+license = GPL-3.0-or-later
+
+[github]
+repository = https://github.com/geof1963-bot/PanelOptimizer
+
+[freecad]
+min_version = 1.1.1
+
+[workbench]
+class_name = PanelOptimizerWorkbench
+module = PanelOptimizer
+icon = Gui/Resources/icons/PanelOptimizer.svg
+
+[features]
+analyze = true
+split_panel = true
+geometry_engine = true
+automatic_stl_export = false
+joinery = false
+cut_optimizer = false
+
+[development]
+status = Alpha
+branch = main
