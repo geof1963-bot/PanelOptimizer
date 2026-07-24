@@ -21,6 +21,26 @@ class GeometryError(PanelOptimizerError):
     pass
 
 
+class NullShapeError(GeometryError):
+    """Raised when a supplied shape is null or missing."""
+    pass
+
+
+class InvalidShapeError(GeometryError):
+    """Raised when a supplied shape fails geometric validation."""
+    pass
+
+
+class EmptyShapeError(GeometryError):
+    """Raised when a supplied shape contains no measurable topology."""
+    pass
+
+
+class GeometryMeasurementError(GeometryError):
+    """Raised when a shape property required for measurement is unavailable."""
+    pass
+
+
 class AnalyzerError(PanelOptimizerError):
     """Analyzer related error."""
     pass

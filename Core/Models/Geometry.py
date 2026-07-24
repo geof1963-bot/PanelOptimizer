@@ -25,4 +25,7 @@ class GeometrySnapshot:
     face_count: int
     edge_count: int
     vertex_count: int
+    shape_type: str = "Unknown"
+    is_closed: bool | None = None
+    is_valid: bool = True
     validation_messages: tuple[str, ...] = ()
