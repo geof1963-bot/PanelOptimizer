@@ -11,6 +11,12 @@ Modules
 -------
 BaseObject : Shared engine-object functionality.
 Exceptions : Custom project exceptions.
+GeometryEngine : Geometry-engine public interface.
+AnalyzerEngine  : Analysis-engine public interface.
+PathFinderEngine: Path-finding public interface.
+JoineryEngine   : Joinery-engine public interface.
+SplitterEngine  : Splitting-engine public interface.
+ExportEngine    : Export-engine public interface.
 Models     : Immutable data contracts shared by engine modules.
 Settings   : Global project parameters.
 """
@@ -22,6 +28,12 @@ __license__ = "GPL-3.0-or-later"
 __all__ = [
     "BaseObject",
     "Exceptions",
+    "GeometryEngine",
+    "AnalyzerEngine",
+    "PathFinderEngine",
+    "JoineryEngine",
+    "SplitterEngine",
+    "ExportEngine",
     "Models",
     "Settings",
 ]
