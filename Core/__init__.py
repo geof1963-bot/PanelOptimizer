@@ -11,6 +11,7 @@ Modules
 -------
 BaseObject : Shared engine-object functionality.
 Exceptions : Custom project exceptions.
+Models     : Immutable data contracts shared by engine modules.
 Settings   : Global project parameters.
 """
 
@@ -21,5 +22,6 @@ __license__ = "GPL-3.0-or-later"
 __all__ = [
     "BaseObject",
     "Exceptions",
+    "Models",
     "Settings",
 ]
