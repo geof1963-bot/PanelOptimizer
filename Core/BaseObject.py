@@ -21,7 +21,7 @@ class BaseObject:
     Base class for all PanelOptimizer engine objects.
     """
 
-    VERSION = "3.01"
+    VERSION = "3.01.0"
 
     def __init__(self) -> None:
 

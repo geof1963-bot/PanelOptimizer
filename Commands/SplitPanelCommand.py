@@ -12,6 +12,8 @@ import os
 import FreeCAD
 import FreeCADGui
 
+from PanelOptimizer.Core.Settings import Settings
+
 
 class PanelOptimizerSplitPanelCommand:
     """
@@ -89,7 +91,10 @@ class PanelOptimizerSplitPanelCommand:
             f"{bbox.ZLength:.2f} mm\n\n"
         )
 
-        if bbox.XLength <= 330 and bbox.YLength <= 330:
+        if (
+            bbox.XLength <= Settings.Split.MAX_PART_WIDTH
+            and bbox.YLength <= Settings.Split.MAX_PART_HEIGHT
+        ):
 
             FreeCAD.Console.PrintMessage(
                 "Panel already printable.\n"
