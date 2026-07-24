@@ -23,7 +23,13 @@ from .Analysis import (
 from .Common import BoundingBox, Direction3D, Point3D
 from .Export import ExportArtifact, ExportReport
 from .Geometry import GeometrySnapshot
-from .Paths import CandidatePath, PathMetrics
+from .Paths import CandidatePath
+from .Scoring import (
+    CandidateScore,
+    PathRanking,
+    ScoreBreakdown,
+    ScoringCriterion,
+)
 from .Split import (
     DowelPlacement,
     JoineryPlan,
@@ -35,6 +41,7 @@ from .Split import (
 __all__ = [
     "AnalysisReport",
     "BoundingBox",
+    "CandidateScore",
     "CandidateZone",
     "CandidatePath",
     "CavityFeature",
@@ -55,9 +62,11 @@ __all__ = [
     "JointSpecification",
     "ManufacturingAnalysis",
     "ManufacturingWarning",
-    "PathMetrics",
+    "PathRanking",
     "Point3D",
     "PrintablePart",
+    "ScoreBreakdown",
+    "ScoringCriterion",
     "SeamAnalysis",
     "SplitPlan",
     "SymmetryFeature",
