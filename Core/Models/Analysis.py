@@ -6,8 +6,18 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Literal
 
+from .Bridges import ThinBridgeFeature
+from .Clearance import (
+    ClearanceObservation,
+    FeatureProximityObservation,
+)
 from .Common import BoundingBox, Direction3D, Point3D
+from .Complexity import GeometricComplexityObservation
+from .Curvature import CurvatureObservation, FlatRegionObservation
+from .Edges import CornerObservation, EdgeObservation
 from .Geometry import GeometrySnapshot
+from .Symmetry import SymmetryObservation
+from .Thickness import ThicknessObservation
 
 
 @dataclass(frozen=True, slots=True)
@@ -33,30 +43,6 @@ class IslandFeature:
 
 
 @dataclass(frozen=True, slots=True)
-class CorridorFeature:
-    """A detected narrow region that may inform a seam-path decision."""
-
-    feature_id: str
-    start: Point3D
-    end: Point3D
-    length_mm: float
-    minimum_width_mm: float
-
-
-@dataclass(frozen=True, slots=True)
-class ThinBridgeFeature:
-    """A detected narrow connection between larger geometric regions."""
-
-    feature_id: str
-    start: Point3D
-    end: Point3D
-    bounding_box: BoundingBox
-    length_mm: float
-    minimum_width_mm: float
-    minimum_thickness_mm: float
-
-
-@dataclass(frozen=True, slots=True)
 class CavityFeature:
     """A detected internal void and its known opening relationships."""
 
@@ -77,17 +63,6 @@ class DeadEndRegion:
     bounding_box: BoundingBox
     depth_mm: float
     minimum_width_mm: float
-
-
-@dataclass(frozen=True, slots=True)
-class SymmetryFeature:
-    """A detected reflective or rotational symmetry relationship."""
-
-    feature_id: str
-    symmetry_type: str
-    origin: Point3D
-    direction: Direction3D
-    confidence: float
 
 
 @dataclass(frozen=True, slots=True)
@@ -160,11 +135,24 @@ class TopologyAnalysis:
 
 @dataclass(frozen=True, slots=True)
 class GeometricAnalysis:
-    """Immutable findings about dimensions, passages, and symmetry."""
+    """Focused local observations and source-wide complexity counts.
 
+    Global bounds, dimensions, area, volume, and raw topology counts remain in
+    ``GeometrySnapshot``.  Holes, islands, cavities, dead ends, and material
+    connectivity remain in ``TopologyAnalysis``.  These empty tuple defaults
+    allow AnalyzerEngine to return a topology-only partial report.
+    """
+
+    thickness_observations: tuple[ThicknessObservation, ...] = ()
+    clearance_observations: tuple[ClearanceObservation, ...] = ()
     thin_bridges: tuple[ThinBridgeFeature, ...] = ()
-    corridors: tuple[CorridorFeature, ...] = ()
-    symmetries: tuple[SymmetryFeature, ...] = ()
+    edge_observations: tuple[EdgeObservation, ...] = ()
+    corner_observations: tuple[CornerObservation, ...] = ()
+    curvature_observations: tuple[CurvatureObservation, ...] = ()
+    flat_regions: tuple[FlatRegionObservation, ...] = ()
+    symmetries: tuple[SymmetryObservation, ...] = ()
+    feature_proximities: tuple[FeatureProximityObservation, ...] = ()
+    complexity_indicators: tuple[GeometricComplexityObservation, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)

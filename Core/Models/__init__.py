@@ -3,7 +3,6 @@
 
 from .Analysis import (
     AnalysisReport,
-    CorridorFeature,
     CandidateZone,
     CavityFeature,
     ConnectivityEdge,
@@ -16,11 +15,17 @@ from .Analysis import (
     ManufacturingAnalysis,
     ManufacturingWarning,
     SeamAnalysis,
-    SymmetryFeature,
-    ThinBridgeFeature,
     TopologyAnalysis,
 )
+from .Bridges import ThinBridgeFeature
+from .Clearance import (
+    ClearanceObservation,
+    FeatureProximityObservation,
+)
 from .Common import BoundingBox, Direction3D, Point3D
+from .Complexity import GeometricComplexityObservation
+from .Curvature import CurvatureObservation, FlatRegionObservation
+from .Edges import CornerObservation, EdgeObservation
 from .Export import ExportArtifact, ExportReport
 from .Geometry import GeometrySnapshot
 from .Paths import CandidatePath
@@ -30,6 +35,8 @@ from .Scoring import (
     ScoreBreakdown,
     ScoringCriterion,
 )
+from .Symmetry import SymmetryObservation
+from .Thickness import ThicknessObservation
 from .Split import (
     DowelPlacement,
     JoineryPlan,
@@ -45,16 +52,22 @@ __all__ = [
     "CandidateZone",
     "CandidatePath",
     "CavityFeature",
+    "ClearanceObservation",
     "ConnectivityEdge",
     "ConnectivityGraph",
     "ConnectivityNode",
-    "CorridorFeature",
+    "CornerObservation",
+    "CurvatureObservation",
     "DeadEndRegion",
     "Direction3D",
     "DowelPlacement",
+    "EdgeObservation",
     "ExportArtifact",
     "ExportReport",
+    "FeatureProximityObservation",
+    "FlatRegionObservation",
     "GeometricAnalysis",
+    "GeometricComplexityObservation",
     "GeometrySnapshot",
     "HoleFeature",
     "IslandFeature",
@@ -69,7 +82,8 @@ __all__ = [
     "ScoringCriterion",
     "SeamAnalysis",
     "SplitPlan",
-    "SymmetryFeature",
+    "SymmetryObservation",
+    "ThicknessObservation",
     "ThinBridgeFeature",
     "TopologyAnalysis",
 ]
