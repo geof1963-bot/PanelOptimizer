@@ -56,6 +56,11 @@ class TopologyAnalysisError(AnalyzerError):
     pass
 
 
+class GeometricAnalysisError(AnalyzerError):
+    """Raised when implemented local geometry cannot be measured reliably."""
+    pass
+
+
 class PathFinderError(PanelOptimizerError):
     """PathFinder related error."""
     pass

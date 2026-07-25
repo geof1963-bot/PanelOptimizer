@@ -10,7 +10,7 @@ from .Common import Point3D
 
 @dataclass(frozen=True, slots=True)
 class ClearanceObservation:
-    """One local free-space distance between two source boundaries.
+    """One local separation between two distinct source boundaries.
 
     Attributes:
         observation_id: Deterministic ID using
@@ -20,14 +20,17 @@ class ClearanceObservation:
             coordinates and mm.
         second_boundary_point: Closest point on the second boundary, in model
             coordinates and mm.
-        clearance_mm: Local unobstructed separation between the points, in mm.
-        source_element_ids: Deterministic source face or edge IDs, in the same
-            order as the two boundary points.
+        clearance_mm: Direct boundary-to-boundary separation, in mm.  The
+            intervening region may be material or empty space; this record does
+            not classify it.
+        source_element_ids: Deterministic IDs of directly measured source faces
+            or edges.  The tuple may be empty when both boundaries are already
+            represented by ``related_feature_ids``.
         related_feature_ids: Topology feature IDs intersecting or bounded by
             the measured clearance.
 
-    This is a local geometric gap.  It is not a manufacturing allowance and
-    does not state whether the clearance is sufficient.
+    This is a local geometric gap.  It is not center-to-center distance, a
+    manufacturing allowance, or a statement that the clearance is sufficient.
     """
 
     observation_id: str

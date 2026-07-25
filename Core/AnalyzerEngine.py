@@ -7,6 +7,7 @@ import logging
 from collections.abc import Callable
 
 from .Exceptions import AnalyzerError, ShapeResolutionError
+from .GeometryAnalysis import GeometricAnalyzer
 from .Models import AnalysisReport, GeometrySnapshot
 from .Topology import TopologyAnalyzer
 
@@ -48,14 +49,15 @@ class AnalyzerEngine:
                 present it takes precedence over the constructor dependency.
 
         Returns:
-            A new partial report containing topology findings.  Geometric,
-            manufacturing, and seam stages retain their immutable empty
-            defaults until those stages are implemented.
+            A new partial report containing topology plus implemented
+            thickness and clearance observations.  Manufacturing and seam
+            stages retain their immutable empty defaults.
 
         Raises:
             ShapeResolutionError: If no callable resolver is available or the
                 source shape cannot be resolved.
-            AnalyzerError: If topology analysis cannot be completed.
+            AnalyzerError: If an implemented analysis stage cannot be
+                completed.
         """
         logger = logging.getLogger(self.__class__.__name__)
         resolver = (
@@ -89,18 +91,27 @@ class AnalyzerEngine:
 
         try:
             topology = TopologyAnalyzer().analyze(geometry, shape)
-            return AnalysisReport(geometry=geometry, topology=topology)
+            geometric = GeometricAnalyzer().analyze(
+                geometry,
+                topology,
+                shape,
+            )
+            return AnalysisReport(
+                geometry=geometry,
+                topology=topology,
+                geometric=geometric,
+            )
         except AnalyzerError:
             logger.error(
-                "Unable to analyze topology for '%s'.",
+                "Unable to analyze source '%s'.",
                 geometry.source_id,
             )
             raise
         except Exception as error:
             logger.error(
-                "Unable to analyze topology for '%s'.",
+                "Unexpected analysis failure for '%s'.",
                 geometry.source_id,
             )
             raise AnalyzerError(
-                f"Topology analysis failed for '{geometry.source_id}'."
+                f"Analysis failed for '{geometry.source_id}'."
             ) from error

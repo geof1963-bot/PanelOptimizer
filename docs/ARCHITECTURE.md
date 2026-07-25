@@ -70,9 +70,10 @@ The stages are cumulative contracts, not interchangeable categories:
 
 An `AnalysisReport` may be partial while stages are being developed. Empty
 frozen model defaults represent stages that have not been activated.
-The current `AnalyzerEngine` activates only `TopologyAnalysis`;
-`GeometricAnalysis`, `ManufacturingAnalysis`, and `SeamAnalysis` remain at
-their model-defined defaults.
+The current `AnalyzerEngine` activates `TopologyAnalysis`, then the thickness
+and clearance portions of `GeometricAnalysis`. The remaining geometric
+collections, `ManufacturingAnalysis`, and `SeamAnalysis` remain at their
+model-defined defaults.
 
 ## 4. Engine responsibilities
 
@@ -148,7 +149,7 @@ surface curvature, manufacturing adequacy, or seam suitability.
 | Collection | Scope | Meaning and units |
 |---|---|---|
 | `thickness_observations` | Local | Distance in mm between opposite material boundaries |
-| `clearance_observations` | Local | Free-space separation in mm between source boundaries |
+| `clearance_observations` | Local | Direct separation in mm between relevant source boundaries |
 | `thin_bridges` | Local region | Bounds, length, width, and thickness of narrow material connections, in mm |
 | `edge_observations` | Local element | Source-edge endpoints, curve family, closure, and length in mm |
 | `corner_observations` | Local element | Source-vertex position and included angle in degrees |
@@ -161,6 +162,11 @@ surface curvature, manufacturing adequacy, or seam suitability.
 These records describe measured evidence only. Words such as “thin,” “flat,”
 and “complexity” identify observation categories; they do not imply acceptance,
 rejection, ranking, or a threshold.
+
+Only `ThicknessObservation` and `ClearanceObservation` are currently
+populated. Their analyzers conservatively omit geometry when an exact,
+supported local measurement cannot be established. The other observation
+types remain contracts only.
 
 ### ManufacturingAnalysis: reserved evaluations
 

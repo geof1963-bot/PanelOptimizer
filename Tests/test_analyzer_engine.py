@@ -17,7 +17,6 @@ from Core.AnalyzerEngine import AnalyzerEngine
 from Core.Exceptions import ShapeResolutionError, TopologyAnalysisError
 from Core.GeometryEngine import GeometryEngine
 from Core.Models import (
-    GeometricAnalysis,
     ManufacturingAnalysis,
     SeamAnalysis,
 )
@@ -282,14 +281,23 @@ class AnalyzerEngineTopologyTests(unittest.TestCase):
 
         self._assert_model_value_is_freecad_independent(report)
 
-    def test_partial_report_uses_exact_unimplemented_stage_defaults(self):
-        """Unimplemented stages equal their model-defined default instances."""
+    def test_partial_report_uses_exact_later_stage_defaults(self):
+        """Implemented geometry is present while later stages stay default."""
         shape = Part.makeBox(5, 5, 5)
         snapshot = self._snapshot(shape)
 
         report = AnalyzerEngine(lambda source_id: shape).analyze(snapshot)
 
-        self.assertEqual(report.geometric, GeometricAnalysis())
+        self.assertTrue(report.geometric.thickness_observations)
+        self.assertEqual(report.geometric.clearance_observations, ())
+        self.assertEqual(report.geometric.thin_bridges, ())
+        self.assertEqual(report.geometric.edge_observations, ())
+        self.assertEqual(report.geometric.corner_observations, ())
+        self.assertEqual(report.geometric.curvature_observations, ())
+        self.assertEqual(report.geometric.flat_regions, ())
+        self.assertEqual(report.geometric.symmetries, ())
+        self.assertEqual(report.geometric.feature_proximities, ())
+        self.assertEqual(report.geometric.complexity_indicators, ())
         self.assertEqual(report.manufacturing, ManufacturingAnalysis())
         self.assertEqual(report.seam, SeamAnalysis())
 
