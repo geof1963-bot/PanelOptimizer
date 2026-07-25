@@ -150,7 +150,7 @@ surface curvature, manufacturing adequacy, or seam suitability.
 |---|---|---|
 | `thickness_observations` | Local | Distance in mm between opposite material boundaries |
 | `clearance_observations` | Local | Direct separation in mm between relevant source boundaries |
-| `thin_bridges` | Local region | Bounds, length, width, and thickness of narrow material connections, in mm |
+| `material_ligaments` | Local segment | Width in mm of a proven continuous-material segment between two boundaries |
 | `edge_observations` | Local element | Source-edge endpoints, curve family, closure, and length in mm |
 | `corner_observations` | Local element | Source-vertex position and included angle in degrees |
 | `curvature_observations` | Local sample | Principal surface curvatures in 1/mm and their model-space directions |
@@ -159,9 +159,17 @@ surface curvature, manufacturing adequacy, or seam suitability.
 | `feature_proximities` | Feature pair | Nearest-point distance in mm between two topology features |
 | `complexity_indicators` | Global description | Source-wide non-analytic and continuity counts not stored by `GeometrySnapshot` |
 
-These records describe measured evidence only. Words such as “thin,” “flat,”
-and “complexity” identify observation categories; they do not imply acceptance,
+These records describe measured evidence only. Words such as “flat” and
+“complexity” identify observation categories; they do not imply acceptance,
 rejection, ranking, or a threshold.
+
+`ClearanceObservation` describes a separation relationship between boundaries
+or features. `MaterialLigamentObservation` describes the different geometric
+fact that the same transverse segment is proven to be continuous material.
+Both may reference the same exact measurement evidence without conflicting:
+clearance owns the separation relationship, while the ligament owns material
+continuity. A ligament does not imply that its width is thin, wide, adequate,
+or unsuitable.
 
 Only `ThicknessObservation` and `ClearanceObservation` are currently
 populated. Their analyzers conservatively omit geometry when an exact,
@@ -172,7 +180,7 @@ types remain contracts only.
 
 Manufacturing analysis is reserved for interpreting observations against an
 explicit manufacturing context. Future responsibilities include minimum wall
-or bridge requirements, process clearance, overhang and support concerns,
+or ligament requirements, process clearance, overhang and support concerns,
 printer-envelope checks, material constraints, and structured warnings.
 
 It owns pass/fail or severity decisions. `GeometricAnalysis` must not contain
@@ -223,7 +231,7 @@ limits.
 - `Geometry`: the source-wide geometry snapshot.
 - `Analysis`: staged report composition plus topology, manufacturing, and seam
   records.
-- `Thickness`, `Clearance`, `Bridges`, `Edges`, `Curvature`, `Symmetry`, and
+- `Thickness`, `Clearance`, `Ligaments`, `Edges`, `Curvature`, `Symmetry`, and
   `Complexity`: focused geometric observation records.
 - `Paths`: unranked candidate path records.
 - `Scoring`: explainable scoring and ranking records.

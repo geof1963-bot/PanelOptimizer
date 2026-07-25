@@ -17,7 +17,6 @@ from .Analysis import (
     SeamAnalysis,
     TopologyAnalysis,
 )
-from .Bridges import ThinBridgeFeature
 from .Clearance import (
     ClearanceObservation,
     FeatureProximityObservation,
@@ -28,6 +27,7 @@ from .Curvature import CurvatureObservation, FlatRegionObservation
 from .Edges import CornerObservation, EdgeObservation
 from .Export import ExportArtifact, ExportReport
 from .Geometry import GeometrySnapshot
+from .Ligaments import MaterialLigamentObservation
 from .Paths import CandidatePath
 from .Scoring import (
     CandidateScore,
@@ -75,6 +75,7 @@ __all__ = [
     "JointSpecification",
     "ManufacturingAnalysis",
     "ManufacturingWarning",
+    "MaterialLigamentObservation",
     "PathRanking",
     "Point3D",
     "PrintablePart",
@@ -84,6 +85,5 @@ __all__ = [
     "SplitPlan",
     "SymmetryObservation",
     "ThicknessObservation",
-    "ThinBridgeFeature",
     "TopologyAnalysis",
 ]

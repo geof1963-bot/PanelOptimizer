@@ -47,7 +47,7 @@ Priority: HIGH
 
 - [ ] Detect islands
 - [ ] Detect holes
-- [ ] Detect thin bridges
+- [ ] Detect material ligaments
 - [ ] Detect printable limits
 - [ ] Build analysis report
 

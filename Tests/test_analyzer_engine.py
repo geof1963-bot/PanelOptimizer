@@ -74,7 +74,7 @@ class AnalyzerEngineTopologyTests(unittest.TestCase):
             {True, False},
         )
         self.assertEqual(len(report.topology.dead_ends), 1)
-        self.assertEqual(report.geometric.thin_bridges, ())
+        self.assertEqual(report.geometric.material_ligaments, ())
         self.assertEqual(report.manufacturing.warnings, ())
         self.assertEqual(report.seam.safe_zones, ())
 
@@ -290,7 +290,7 @@ class AnalyzerEngineTopologyTests(unittest.TestCase):
 
         self.assertTrue(report.geometric.thickness_observations)
         self.assertEqual(report.geometric.clearance_observations, ())
-        self.assertEqual(report.geometric.thin_bridges, ())
+        self.assertEqual(report.geometric.material_ligaments, ())
         self.assertEqual(report.geometric.edge_observations, ())
         self.assertEqual(report.geometric.corner_observations, ())
         self.assertEqual(report.geometric.curvature_observations, ())

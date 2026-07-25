@@ -19,10 +19,10 @@ from Core.Models import (
     FlatRegionObservation,
     GeometricAnalysis,
     GeometricComplexityObservation,
+    MaterialLigamentObservation,
     Point3D,
     SymmetryObservation,
     ThicknessObservation,
-    ThinBridgeFeature,
 )
 
 
@@ -54,14 +54,14 @@ class GeometricAnalysisContractTests(unittest.TestCase):
             clearance_mm=5.0,
             source_element_ids=("panel:edge:0001", "panel:edge:0002"),
         )
-        bridge = ThinBridgeFeature(
-            feature_id="panel:geometry:bridge:0001",
+        ligament = MaterialLigamentObservation(
+            observation_id="panel:geometry:ligament:0001",
             start=self.first,
             end=self.second,
-            bounding_box=self.bounds,
-            length_mm=5.0,
-            minimum_width_mm=2.0,
-            minimum_thickness_mm=1.0,
+            width_mm=5.0,
+            first_boundary_id="panel:hole:0001",
+            second_boundary_id="panel:face:0003",
+            related_feature_ids=("panel:hole:0001",),
             source_element_ids=("panel:face:0003",),
         )
         edge = EdgeObservation(
@@ -126,7 +126,7 @@ class GeometricAnalysisContractTests(unittest.TestCase):
         return GeometricAnalysis(
             thickness_observations=(thickness,),
             clearance_observations=(clearance,),
-            thin_bridges=(bridge,),
+            material_ligaments=(ligament,),
             edge_observations=(edge,),
             corner_observations=(corner,),
             curvature_observations=(curvature,),
@@ -151,7 +151,7 @@ class GeometricAnalysisContractTests(unittest.TestCase):
         analysis = self._populated_analysis()
 
         with self.assertRaises(FrozenInstanceError):
-            analysis.thin_bridges = ()
+            analysis.material_ligaments = ()
 
         for model_field in fields(analysis):
             collection = getattr(analysis, model_field.name)
@@ -176,8 +176,15 @@ class GeometricAnalysisContractTests(unittest.TestCase):
 
         self.assertFalse(hasattr(models, "CorridorFeature"))
         self.assertFalse(hasattr(models, "SymmetryFeature"))
+        self.assertFalse(hasattr(models, "ThinBridgeFeature"))
         self.assertFalse(hasattr(analysis_models, "CorridorFeature"))
         self.assertFalse(hasattr(analysis_models, "SymmetryFeature"))
+        self.assertFalse(hasattr(analysis_models, "ThinBridgeFeature"))
+        analysis_field_names = {
+            model_field.name for model_field in fields(GeometricAnalysis)
+        }
+        self.assertIn("material_ligaments", analysis_field_names)
+        self.assertNotIn("thin_bridges", analysis_field_names)
         symmetry_fields = {
             model_field.name for model_field in fields(SymmetryObservation)
         }

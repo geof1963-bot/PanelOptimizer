@@ -6,7 +6,6 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Literal
 
-from .Bridges import ThinBridgeFeature
 from .Clearance import (
     ClearanceObservation,
     FeatureProximityObservation,
@@ -16,6 +15,7 @@ from .Complexity import GeometricComplexityObservation
 from .Curvature import CurvatureObservation, FlatRegionObservation
 from .Edges import CornerObservation, EdgeObservation
 from .Geometry import GeometrySnapshot
+from .Ligaments import MaterialLigamentObservation
 from .Symmetry import SymmetryObservation
 from .Thickness import ThicknessObservation
 
@@ -145,7 +145,7 @@ class GeometricAnalysis:
 
     thickness_observations: tuple[ThicknessObservation, ...] = ()
     clearance_observations: tuple[ClearanceObservation, ...] = ()
-    thin_bridges: tuple[ThinBridgeFeature, ...] = ()
+    material_ligaments: tuple[MaterialLigamentObservation, ...] = ()
     edge_observations: tuple[EdgeObservation, ...] = ()
     corner_observations: tuple[CornerObservation, ...] = ()
     curvature_observations: tuple[CurvatureObservation, ...] = ()

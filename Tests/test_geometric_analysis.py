@@ -411,7 +411,7 @@ class GeometricAnalysisIntegrationTests(unittest.TestCase):
         self.assertEqual(report.topology, topology_before)
         self.assertTrue(report.geometric.thickness_observations)
         self.assertTrue(report.geometric.clearance_observations)
-        self.assertEqual(report.geometric.thin_bridges, ())
+        self.assertEqual(report.geometric.material_ligaments, ())
         self.assertEqual(report.geometric.edge_observations, ())
         self.assertEqual(report.geometric.corner_observations, ())
         self.assertEqual(report.geometric.curvature_observations, ())
