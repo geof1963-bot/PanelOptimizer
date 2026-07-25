@@ -46,6 +46,16 @@ class AnalyzerError(PanelOptimizerError):
     pass
 
 
+class ShapeResolutionError(AnalyzerError):
+    """Raised when an analyzer cannot resolve its snapshot's source shape."""
+    pass
+
+
+class TopologyAnalysisError(AnalyzerError):
+    """Raised when source topology cannot be described reliably."""
+    pass
+
+
 class PathFinderError(PanelOptimizerError):
     """PathFinder related error."""
     pass
