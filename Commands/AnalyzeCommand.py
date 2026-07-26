@@ -12,6 +12,9 @@ import os
 import FreeCAD
 import FreeCADGui
 
+from Core.AnalyzerEngine import AnalyzerEngine
+from Core.GeometryEngine import GeometryEngine
+
 
 class PanelOptimizerAnalyzeCommand:
     """
@@ -128,16 +131,18 @@ class PanelOptimizerAnalyzeCommand:
         FreeCAD.Console.PrintMessage("\n")
 
         try:
-            from PanelOptimizer.Core.Analyzer import Analyzer
-
-            analyzer = Analyzer()
-
-            analyzer.analyze(obj)
+            source_id = str(obj.Name)
+            snapshot = GeometryEngine().create_snapshot(
+                shape,
+                source_id,
+                str(obj.Label),
+            )
+            AnalyzerEngine(lambda resolved_id: shape).analyze(snapshot)
 
         except Exception as err:
 
             FreeCAD.Console.PrintWarning(
-                "\nAnalyzer module not available.\n"
+                "\nPanelOptimizer analysis failed.\n"
             )
 
             FreeCAD.Console.PrintWarning(
