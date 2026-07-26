@@ -30,7 +30,7 @@ class _WorkbenchStub:
 
 
 class InitGuiStartupTests(unittest.TestCase):
-    """Execute InitGui using the globals FreeCAD provides to init scripts."""
+    """Execute InitGui using FreeCAD-style split globals and locals."""
 
     def test_startup_without_file_registers_one_workbench(self):
         """Path resolution and registration do not require ``__file__``."""
@@ -57,31 +57,46 @@ class InitGuiStartupTests(unittest.TestCase):
             "Commands.SplitPanelCommand": split_command,
         }
         source_path = Path(__file__).resolve().parents[1] / "InitGui.py"
-        namespace = {
+        execution_globals = {
             "__name__": "PanelOptimizer_InitGui_startup_test",
             "Workbench": _WorkbenchStub,
+            "FreeCAD": freecad,
+            "FreeCADGui": freecad_gui,
+            "os": os,
         }
-        self.assertNotIn("__file__", namespace)
+        execution_locals = {}
+        self.assertNotIn("__file__", execution_globals)
+        self.assertNotIn("__file__", execution_locals)
 
         with patch.dict(sys.modules, module_stubs):
             source = source_path.read_text(encoding="utf-8")
-            exec(compile(source, str(source_path), "exec"), namespace)
+            exec(
+                compile(source, str(source_path), "exec"),
+                execution_globals,
+                execution_locals,
+            )
 
             self.assertEqual(len(registered), 1)
             workbench = registered[0]
             expected_root = os.path.abspath(
                 os.path.join(user_data, "Mod", "PanelOptimizer")
             )
-            self.assertEqual(namespace["MODULE_DIRECTORY"], expected_root)
             self.assertEqual(
-                workbench.Icon,
+                execution_locals["MODULE_DIRECTORY"],
+                expected_root,
+            )
+            self.assertEqual(
+                execution_locals["ICON_DIRECTORY"],
                 os.path.join(
                     expected_root,
                     "Gui",
                     "Resources",
                     "icons",
-                    "PanelOptimizer.svg",
                 ),
+            )
+            self.assertEqual(
+                workbench.Icon,
+                execution_locals["WORKBENCH_ICON"],
             )
 
             workbench.Initialize()
