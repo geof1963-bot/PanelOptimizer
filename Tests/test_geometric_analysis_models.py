@@ -169,6 +169,30 @@ class GeometricAnalysisContractTests(unittest.TestCase):
         self.assertEqual(first, second)
         self.assertEqual(hash(first), hash(second))
 
+    def test_clearance_relationship_type_is_explicit_and_immutable(self):
+        """Legacy descriptive gaps default to a non-manufacturing meaning."""
+        unspecified = ClearanceObservation(
+            observation_id="panel:geometry:clearance:0001",
+            first_boundary_point=self.first,
+            second_boundary_point=self.second,
+            clearance_mm=5.0,
+            source_element_ids=(),
+        )
+        typed = ClearanceObservation(
+            observation_id="panel:geometry:clearance:0002",
+            first_boundary_point=self.first,
+            second_boundary_point=self.second,
+            clearance_mm=5.0,
+            source_element_ids=(),
+            related_feature_ids=("panel:hole:0001", "panel:hole:0002"),
+            relationship_type="hole_to_hole",
+        )
+
+        self.assertEqual(unspecified.relationship_type, "unspecified")
+        self.assertEqual(typed.relationship_type, "hole_to_hole")
+        with self.assertRaises(FrozenInstanceError):
+            typed.relationship_type = "unspecified"
+
     def test_obsolete_draft_contracts_are_not_exported(self):
         """Misleading import-only aliases are absent after clean migration."""
         import Core.Models as models

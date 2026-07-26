@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Literal
 
 from .Common import Point3D
 
@@ -28,6 +29,11 @@ class ClearanceObservation:
             represented by ``related_feature_ids``.
         related_feature_ids: Topology feature IDs intersecting or bounded by
             the measured clearance.
+        relationship_type: Explicit supported relationship semantics.
+            ``hole_to_hole`` and ``hole_to_exterior`` are assigned only by
+            their reliable geometric detectors; ``unspecified`` preserves
+            compatibility for other descriptive gaps and is never sufficient
+            for typed manufacturing-clearance evaluation.
 
     This is a local geometric gap.  It is not center-to-center distance, a
     manufacturing allowance, or a statement that the clearance is sufficient.
@@ -39,6 +45,11 @@ class ClearanceObservation:
     clearance_mm: float
     source_element_ids: tuple[str, ...]
     related_feature_ids: tuple[str, ...] = ()
+    relationship_type: Literal[
+        "hole_to_hole",
+        "hole_to_exterior",
+        "unspecified",
+    ] = "unspecified"
 
 
 @dataclass(frozen=True, slots=True)

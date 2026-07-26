@@ -65,8 +65,8 @@ The stages are cumulative contracts, not interchangeable categories:
 3. `GeometricAnalysis` owns local measurements and descriptive geometric
    observations.
 4. `ManufacturingAnalysis` interprets upstream evidence against an injected,
-   immutable manufacturing profile. Its contracts are defined, but its
-   analyzer is not yet implemented or activated.
+   immutable manufacturing profile. Build-envelope, minimum-thickness,
+   minimum-ligament, and typed minimum-clearance rules are active.
 5. `SeamAnalysis` will evaluate geometry specifically for seam planning.
 
 An `AnalysisReport` may be partial while stages are being developed. Empty
@@ -74,8 +74,9 @@ frozen model defaults represent stages that have not been activated.
 The current `AnalyzerEngine` activates `TopologyAnalysis` and every approved
 `GeometricAnalysis` collection: thickness, clearance, material ligament, edge,
 corner, curvature, flat region, symmetry, feature proximity, and geometric
-complexity. `ManufacturingAnalysis` and `SeamAnalysis` remain at their exact
-model-defined defaults.
+complexity. It then composes or accepts an immutable `ManufacturingProfile`
+and activates the implemented `ManufacturingAnalysis` rules. `SeamAnalysis`
+remains at its exact model-defined default.
 
 ## 4. Engine responsibilities
 
@@ -205,14 +206,14 @@ not weighted, normalized, labeled, ranked, or combined into a score.
 All analyzers omit unsupported geometry rather than approximating or
 evaluating it.
 
-### ManufacturingAnalysis: reserved evaluations
+### ManufacturingAnalysis: fabrication constraint interpretation
 
-Manufacturing analysis is reserved for interpreting observations against an
-explicit manufacturing context. It may consume `GeometrySnapshot`,
+Manufacturing analysis interprets observations against an explicit
+manufacturing context. It consumes `GeometrySnapshot`,
 `TopologyAnalysis`, `GeometricAnalysis`, and a versioned immutable
-`ManufacturingProfile`. Future responsibilities include minimum thickness or
-ligament requirements, process clearance, build-envelope checks, material
-constraints, and structured fabrication-risk warnings.
+`ManufacturingProfile`. The currently implemented rules are build-envelope,
+minimum local thickness, minimum material-ligament width, typed hole-to-hole
+clearance, and typed hole-to-exterior clearance.
 
 It owns pass/fail or severity decisions. `GeometricAnalysis` must not contain
 printer limits, manufacturing tolerances, warning severity, or printability
@@ -230,11 +231,34 @@ The manufacturing contracts are:
 | `ManufacturingAnalysis` | Profile provenance, ordered evaluations and warnings, plus a non-scored overall status |
 
 The physical machine envelope is distinct from the effective allowed part
-extent. `BuildEnvelope` retains both plus the configured total safety margin;
-it does not calculate or validate them. Current configured values remain owned
-by the centralized `Settings` system. A future composition layer will create a
-versioned immutable profile snapshot from settings and inject it into the
-manufacturing stage. Model modules never read global settings.
+extent. `BuildEnvelope` retains both plus the configured total safety margin.
+Current configured values remain owned by the centralized `Settings` system;
+model modules never read global settings.
+
+`ProfileComposer` applies this explicit settings ownership policy:
+
+- `Settings.Printer.BED_SIZE_X/Y` own physical X/Y extents.
+- `Settings.Split.MAX_PART_WIDTH/HEIGHT` own effective X/Y part limits.
+- `Settings.Printer.MAX_PART_SIZE` is a legacy overlapping scalar and is not
+  read by profile composition.
+- Z is composed and evaluated only when both `Printer.BED_SIZE_Z` and
+  `Split.MAX_PART_DEPTH` are configured. Neither is guessed by default.
+- The total axis safety margin is physical extent minus effective extent.
+- Optional minimum rules come only from `Settings.Manufacturing`; their
+  default values are unconfigured and disabled.
+
+Composition requires physical and effective extents to be finite and strictly
+positive, rejects an effective limit larger than its physical extent, and
+requires all three Z values to be either configured together or absent. The
+total safety margin is finite and non-negative; zero is valid when physical
+and effective extents are equal. Injected profiles receive the same envelope
+coherence validation before evaluation, including the invariant
+`margin = physical - effective`. Identical settings produce an equal profile
+with stable ID, profile version, settings version, constraint order, and notes.
+A caller may instead inject a complete immutable profile into `AnalyzerEngine`.
+The invariant check allows only a centralized `1e-12 mm` absolute tolerance
+for floating-point representation. Actual measured-versus-required constraint
+comparisons remain exact and use no geometric or manufacturing allowance.
 
 Hard constraints and warnings are separate concepts:
 
@@ -244,18 +268,47 @@ Hard constraints and warnings are separate concepts:
   produce a non-fatal `ManufacturingWarning`.
 - Passing and unavailable evidence are represented explicitly by `pass` and
   `not_evaluated`.
-- `ManufacturingAnalysis.overall_status` is reserved for deterministic
-  derivation from evaluations as `pass`, `warning`, or `fail`; its inactive
-  default is `not_evaluated`. It is not a score.
+- `ManufacturingAnalysis.overall_status` is derived deterministically: any
+  failed hard evaluation produces `fail`; otherwise any warning evaluation or
+  warning record produces `warning`; otherwise any performed evaluation
+  produces `pass`; no evaluations produces `not_evaluated`. It is not a score.
 
-Future thickness, ligament, and clearance evaluation will reference the
-upstream `ThicknessObservation`, `MaterialLigamentObservation`, and
+Thickness, ligament, and clearance evaluation references the upstream
+`ThicknessObservation`, `MaterialLigamentObservation`, and
 `ClearanceObservation` IDs. Each evaluation snapshots the measured value,
 configured required value, comparison, and unit for explainability without
 duplicating points, bounds, or FreeCAD geometry. Corners, curvature, flat
 regions, complexity indicators, holes, and cavities may support future
 process-specific evaluations only when an explicit profile constraint defines
 their manufacturing meaning.
+
+Clearance rules are intentionally relationship-specific. Every supported
+`ClearanceObservation` carries an explicit detector-assigned
+`relationship_type`: `hole_to_hole` or `hole_to_exterior`. Manufacturing also
+corroborates that type against current topology and source evidence: a
+hole-to-hole gap has two known hole IDs and no source elements; a
+hole-to-exterior gap has one known hole ID and one or more measured source-face
+IDs. `unspecified`, cavity-related, partial, or contradictory evidence is
+omitted rather than inferred from tuple length. Stepped and counterbored
+segments retain their distinct exact local observations; the evaluator does
+not infer a single physical-opening relationship that topology has not
+provided. Only explicitly named constraints for the two typed relationships
+are implemented. A generic minimum-feature-clearance or assembly-clearance
+rule is not applied because the upstream contract cannot distinguish every
+possible manufacturing meaning.
+
+This stage evaluates the source geometry it receives. Therefore:
+
+```text
+source geometry manufacturing evaluation
+    != future post-split printable-part validation
+```
+
+An original 594 x 594 mm panel may validly fail the one-part build envelope.
+That result means the source cannot be fabricated as one part under the active
+profile. It is evidence for a future split workflow, not an analysis exception,
+seam decision, split request, or application failure. Candidate-part and
+post-split validation are intentionally not implemented here.
 
 ### SeamAnalysis: reserved seam evidence
 

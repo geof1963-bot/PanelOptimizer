@@ -100,8 +100,8 @@ class ManufacturingContractTests(unittest.TestCase):
         )
         return envelope, constraint, profile, evaluation, warning, analysis
 
-    def test_inactive_analysis_has_exact_model_defaults(self):
-        """AnalyzerEngine's untouched stage has an auditable inactive state."""
+    def test_uncomputed_analysis_has_exact_model_defaults(self):
+        """The standalone uncomputed contract has an auditable default state."""
         analysis = ManufacturingAnalysis()
 
         self.assertIsNone(analysis.profile_id)

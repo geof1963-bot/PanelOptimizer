@@ -419,7 +419,8 @@ class GeometricAnalysisIntegrationTests(unittest.TestCase):
         self.assertTrue(report.geometric.symmetries)
         self.assertTrue(report.geometric.feature_proximities)
         self.assertTrue(report.geometric.complexity_indicators)
-        self.assertEqual(report.manufacturing, ManufacturingAnalysis())
+        self.assertEqual(report.manufacturing.overall_status, "pass")
+        self.assertTrue(report.manufacturing.constraint_evaluations)
         self.assertEqual(report.seam, SeamAnalysis())
 
 

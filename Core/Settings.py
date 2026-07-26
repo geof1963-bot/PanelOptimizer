@@ -20,8 +20,10 @@ class PrinterSettings:
 
     BED_SIZE_X: float = 350.0
     BED_SIZE_Y: float = 350.0
+    BED_SIZE_Z: float | None = None
 
-    # Safety margin
+    # Legacy compatibility value. ProfileComposer intentionally ignores this;
+    # Settings.Split owns effective axis-specific printable-part limits.
     MAX_PART_SIZE: float = 330.0
 
 
@@ -63,6 +65,7 @@ class SplitSettings:
 
     MAX_PART_WIDTH: float = 330.0
     MAX_PART_HEIGHT: float = 330.0
+    MAX_PART_DEPTH: float | None = None
 
     ENABLE_SMART_PATH: bool = True
 
@@ -90,6 +93,39 @@ class AnalyzerSettings:
     COMPUTE_PERIMETER: bool = True
 
 
+@dataclass(frozen=True)
+class ManufacturingSettings:
+    """Versioned fabrication constraints used to compose a profile.
+
+    ``None`` means that no scalar value is configured.  Enabled flags are
+    retained separately so a configured rule can be disabled without losing
+    its value.  No minimum is invented by the manufacturing implementation.
+    """
+
+    PROFILE_ID: str = "creality-k2-plus-fdm"
+    PROFILE_VERSION: str = "1"
+    SETTINGS_VERSION: str = "3.12"
+    PROCESS_TYPE: str = "fdm"
+
+    ENABLE_BUILD_ENVELOPE: bool = True
+
+    MINIMUM_THICKNESS_MM: float | None = None
+    MINIMUM_THICKNESS_LEVEL: str = "hard"
+    ENABLE_MINIMUM_THICKNESS: bool = False
+
+    MINIMUM_LIGAMENT_WIDTH_MM: float | None = None
+    MINIMUM_LIGAMENT_LEVEL: str = "hard"
+    ENABLE_MINIMUM_LIGAMENT: bool = False
+
+    MINIMUM_HOLE_TO_HOLE_CLEARANCE_MM: float | None = None
+    MINIMUM_HOLE_TO_HOLE_CLEARANCE_LEVEL: str = "hard"
+    ENABLE_MINIMUM_HOLE_TO_HOLE_CLEARANCE: bool = False
+
+    MINIMUM_HOLE_TO_EXTERIOR_CLEARANCE_MM: float | None = None
+    MINIMUM_HOLE_TO_EXTERIOR_CLEARANCE_LEVEL: str = "hard"
+    ENABLE_MINIMUM_HOLE_TO_EXTERIOR_CLEARANCE: bool = False
+
+
 class Settings:
     """
     Global settings container.
@@ -104,3 +140,5 @@ class Settings:
     Split = SplitSettings()
 
     Analyzer = AnalyzerSettings()
+
+    Manufacturing = ManufacturingSettings()

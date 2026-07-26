@@ -30,18 +30,19 @@ class BuildEnvelope:
         physical_y_mm: Physical machine travel or bed extent along model Y,
             in millimetres.
         physical_z_mm: Physical machine travel or bed extent along model Z,
-            in millimetres.
+            in millimetres, or ``None`` when not configured.
         safety_margin_x_mm: Total reserved X span, in millimetres, used when
             configuring the effective limit; it is not a per-side distance.
         safety_margin_y_mm: Total reserved Y span, in millimetres.
-        safety_margin_z_mm: Total reserved Z span, in millimetres.
+        safety_margin_z_mm: Total reserved Z span, in millimetres, or ``None``.
         effective_x_mm: Configured maximum allowed part extent along X after
             margins and any machine-specific restrictions, in millimetres.
         effective_y_mm: Configured maximum allowed part extent along Y after
             margins and restrictions, in millimetres.
         effective_z_mm: Configured maximum allowed part extent along Z after
-            margins and restrictions, in millimetres.
-        is_enabled: Whether a future analyzer evaluates this hard constraint.
+            margins and restrictions, in millimetres, or ``None``.
+        is_enabled: Whether the manufacturing analyzer evaluates this hard
+            constraint.
 
     Physical size, reserved margin, and effective allowed size are retained as
     separate auditable configuration facts.  This model does not calculate or
@@ -51,13 +52,13 @@ class BuildEnvelope:
     constraint_id: str
     physical_x_mm: float
     physical_y_mm: float
-    physical_z_mm: float
+    physical_z_mm: float | None
     safety_margin_x_mm: float
     safety_margin_y_mm: float
-    safety_margin_z_mm: float
+    safety_margin_z_mm: float | None
     effective_x_mm: float
     effective_y_mm: float
-    effective_z_mm: float
+    effective_z_mm: float | None
     is_enabled: bool = True
 
 
@@ -69,14 +70,14 @@ class ManufacturingConstraint:
         constraint_id: Stable identifier unique within the profile.
         constraint_type: Extensible machine-readable type such as
             ``minimum_thickness``, ``minimum_ligament_width``, or
-            ``minimum_feature_clearance``.
+            ``minimum_hole_to_hole_clearance``.
         level: ``hard`` when violation makes the source incompatible with the
             profile, or ``warning`` when violation describes fabrication risk.
         comparison: Required comparison between evidence and ``limit_value``.
         limit_value: Configured required or allowed scalar value.
         unit: Explicit unit for the limit and future measured value, such as
             ``mm``, ``degrees``, ``1/mm``, ``count``, or ``dimensionless``.
-        severity: Severity assigned by a future analyzer when the constraint
+        severity: Severity assigned by the analyzer when the constraint
             is violated. Hard constraints normally use ``error``.
         description: Human-readable explanation of the configured rule.
         is_enabled: Whether a future analyzer evaluates this constraint.
@@ -113,8 +114,8 @@ class ManufacturingProfile:
         notes: Ordered profile documentation strings.
 
     The centralized Settings system remains the configured-value source.  A
-    future composition layer will snapshot those values into this contract and
-    inject it into manufacturing analysis; the model itself reads no globals.
+    ``ProfileComposer`` snapshots those values into this contract and injects
+    no global or mutable state into manufacturing evaluation.
     """
 
     profile_id: str
@@ -221,8 +222,8 @@ class ManufacturingAnalysis:
         constraint_evaluations: Ordered explainable hard/warning evaluations.
         warnings: Ordered non-fatal fabrication concerns.
 
-    ``overall_status`` will be derived solely from explicit evaluations when
-    the stage is implemented; it is never a score.
+    ``overall_status`` is derived solely from explicit evaluations; it is
+    never a score.
     """
 
     profile_id: str | None = None

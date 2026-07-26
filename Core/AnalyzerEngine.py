@@ -8,7 +8,8 @@ from collections.abc import Callable
 
 from .Exceptions import AnalyzerError, ShapeResolutionError
 from .GeometryAnalysis import GeometricAnalyzer
-from .Models import AnalysisReport, GeometrySnapshot
+from .ManufacturingAnalysis import ManufacturingAnalyzer, ProfileComposer
+from .Models import AnalysisReport, GeometrySnapshot, ManufacturingProfile
 from .Topology import TopologyAnalyzer
 
 __all__ = ["AnalyzerEngine"]
@@ -25,21 +26,26 @@ class AnalyzerEngine:
     def __init__(
         self,
         shape_resolver: Callable[[str], object] | None = None,
+        manufacturing_profile: ManufacturingProfile | None = None,
     ) -> None:
-        """Create an analyzer with an optional read-only shape resolver.
+        """Create an analyzer with optional resolver and immutable profile.
 
         Args:
             shape_resolver: A callable mapping a snapshot source ID to the
                 caller-owned source shape.  It may instead be supplied to
                 :meth:`analyze` for compatibility with engine call sites that
                 inject dependencies per operation.
+            manufacturing_profile: Optional caller-composed profile. When
+                absent, centralized settings are composed deterministically.
         """
         self._shape_resolver = shape_resolver
+        self._manufacturing_profile = manufacturing_profile
 
     def analyze(
         self,
         geometry: GeometrySnapshot,
         shape_resolver: Callable[[str], object] | None = None,
+        manufacturing_profile: ManufacturingProfile | None = None,
     ) -> AnalysisReport:
         """Describe the implemented analysis stages for one snapshot.
 
@@ -47,11 +53,13 @@ class AnalyzerEngine:
             geometry: The immutable geometry snapshot to inspect.
             shape_resolver: An optional operation-scoped resolver.  When
                 present it takes precedence over the constructor dependency.
+            manufacturing_profile: Optional operation-scoped immutable
+                profile. It takes precedence over the constructor profile.
 
         Returns:
-            A new partial report containing topology plus the complete
-            approved GeometricAnalysis observations. Manufacturing and seam
-            stages retain their immutable empty defaults.
+            A new partial report containing topology, the complete approved
+            GeometricAnalysis, and implemented ManufacturingAnalysis.
+            SeamAnalysis retains its exact immutable default.
 
         Raises:
             ShapeResolutionError: If no callable resolver is available or the
@@ -96,10 +104,24 @@ class AnalyzerEngine:
                 topology,
                 shape,
             )
+            profile = (
+                manufacturing_profile
+                if manufacturing_profile is not None
+                else self._manufacturing_profile
+            )
+            if profile is None:
+                profile = ProfileComposer().compose()
+            manufacturing = ManufacturingAnalyzer().analyze(
+                geometry,
+                topology,
+                geometric,
+                profile,
+            )
             return AnalysisReport(
                 geometry=geometry,
                 topology=topology,
                 geometric=geometric,
+                manufacturing=manufacturing,
             )
         except AnalyzerError:
             logger.error(

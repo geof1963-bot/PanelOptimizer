@@ -37,6 +37,7 @@ class _ClearanceMeasurement:
     clearance_mm: float
     source_element_ids: tuple[str, ...]
     related_feature_ids: tuple[str, ...]
+    relationship_type: str
 
 
 class ClearanceAnalyzer:
@@ -126,6 +127,7 @@ class ClearanceAnalyzer:
                 clearance_mm=measurement.clearance_mm,
                 source_element_ids=measurement.source_element_ids,
                 related_feature_ids=measurement.related_feature_ids,
+                relationship_type=measurement.relationship_type,
             )
             for index, measurement in enumerate(measurements, start=1)
         )
@@ -203,6 +205,7 @@ class ClearanceAnalyzer:
                 first.feature_id,
                 second.feature_id,
             ),
+            relationship_type="hole_to_hole",
         )
 
     def _between_hole_and_plane(
@@ -278,6 +281,7 @@ class ClearanceAnalyzer:
             clearance_mm=clearance,
             source_element_ids=(planar_face.source_face_id,),
             related_feature_ids=(hole.feature_id,),
+            relationship_type="hole_to_exterior",
         )
 
     @staticmethod

@@ -237,7 +237,8 @@ class SymmetryAndComplexityIntegrationTests(unittest.TestCase):
         self.assertTrue(geometric.symmetries)
         self.assertTrue(geometric.feature_proximities)
         self.assertTrue(geometric.complexity_indicators)
-        self.assertEqual(first.manufacturing, ManufacturingAnalysis())
+        self.assertEqual(first.manufacturing.overall_status, "pass")
+        self.assertTrue(first.manufacturing.constraint_evaluations)
         self.assertEqual(first.seam, SeamAnalysis())
 
 

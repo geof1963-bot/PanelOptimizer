@@ -61,6 +61,21 @@ class GeometricAnalysisError(AnalyzerError):
     pass
 
 
+class ManufacturingAnalysisError(AnalyzerError):
+    """Raised when manufacturing evidence cannot be evaluated reliably."""
+    pass
+
+
+class ManufacturingProfileError(ManufacturingAnalysisError):
+    """Raised when configured settings cannot form a valid profile."""
+    pass
+
+
+class ConstraintEvaluationError(ManufacturingAnalysisError):
+    """Raised when a configured constraint cannot be applied safely."""
+    pass
+
+
 class PathFinderError(PanelOptimizerError):
     """PathFinder related error."""
     pass
