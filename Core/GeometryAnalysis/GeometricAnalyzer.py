@@ -6,12 +6,14 @@ from __future__ import annotations
 from ..Exceptions import GeometricAnalysisError
 from ..Models import GeometricAnalysis, GeometrySnapshot, TopologyAnalysis
 from .ClearanceAnalyzer import ClearanceAnalyzer
+from .ComplexityAnalyzer import ComplexityAnalyzer
 from .CornerAnalyzer import CornerAnalyzer
 from .CurvatureAnalyzer import CurvatureAnalyzer
 from .EdgeAnalyzer import EdgeAnalyzer
 from .FlatRegionAnalyzer import FlatRegionAnalyzer
 from .LigamentAnalyzer import LigamentAnalyzer
 from .ProximityAnalyzer import ProximityAnalyzer
+from .SymmetryAnalyzer import SymmetryAnalyzer
 from .ThicknessAnalyzer import ThicknessAnalyzer
 
 __all__ = ["GeometricAnalyzer"]
@@ -28,8 +30,7 @@ class GeometricAnalyzer:
     ) -> GeometricAnalysis:
         """Return all currently implemented observations for one source shape.
 
-        All other GeometricAnalysis collections retain their exact model
-        defaults until their dedicated components are implemented.
+        Manufacturing and seam stages remain outside this orchestrator.
 
         Raises:
             GeometricAnalysisError: If an unexpected failure prevents the
@@ -46,6 +47,11 @@ class GeometricAnalyzer:
                 topology,
                 shape,
             )
+            edge_observations = EdgeAnalyzer().analyze(
+                geometry,
+                topology,
+                shape,
+            )
             return GeometricAnalysis(
                 thickness_observations=thickness_observations,
                 clearance_observations=clearance_observations,
@@ -54,11 +60,7 @@ class GeometricAnalyzer:
                     topology,
                     clearance_observations,
                 ),
-                edge_observations=EdgeAnalyzer().analyze(
-                    geometry,
-                    topology,
-                    shape,
-                ),
+                edge_observations=edge_observations,
                 corner_observations=CornerAnalyzer().analyze(
                     geometry,
                     topology,
@@ -74,11 +76,22 @@ class GeometricAnalyzer:
                     topology,
                     shape,
                 ),
+                symmetries=SymmetryAnalyzer().analyze(
+                    geometry,
+                    topology,
+                    shape,
+                ),
                 feature_proximities=ProximityAnalyzer().analyze(
                     geometry,
                     topology,
                     shape,
                     clearance_observations,
+                ),
+                complexity_indicators=ComplexityAnalyzer().analyze(
+                    geometry,
+                    topology,
+                    shape,
+                    edge_observations,
                 ),
             )
         except GeometricAnalysisError:

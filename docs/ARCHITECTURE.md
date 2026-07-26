@@ -70,10 +70,10 @@ The stages are cumulative contracts, not interchangeable categories:
 
 An `AnalysisReport` may be partial while stages are being developed. Empty
 frozen model defaults represent stages that have not been activated.
-The current `AnalyzerEngine` activates `TopologyAnalysis`, then thickness,
-clearance, material-ligament, edge, corner, curvature, flat-region, and
-feature-proximity observations in `GeometricAnalysis`. The remaining geometric
-collections, `ManufacturingAnalysis`, and `SeamAnalysis` remain at their
+The current `AnalyzerEngine` activates `TopologyAnalysis` and every approved
+`GeometricAnalysis` collection: thickness, clearance, material ligament, edge,
+corner, curvature, flat region, symmetry, feature proximity, and geometric
+complexity. `ManufacturingAnalysis` and `SeamAnalysis` remain at their exact
 model-defined defaults.
 
 ## 4. Engine responsibilities
@@ -181,11 +181,28 @@ proximities instead use exact B-rep nearest-boundary distance.
 `ThicknessObservation`, `ClearanceObservation`,
 `MaterialLigamentObservation`, `EdgeObservation`, `CornerObservation`,
 `CurvatureObservation`, `FlatRegionObservation`, and
-`FeatureProximityObservation` are currently populated. Analytic curvature is
-limited to planes, cylinders, and spheres. Flat regions merge only coplanar,
-same-solid planar faces connected by a shared source edge. All analyzers omit
-unsupported geometry rather than approximating or evaluating it. Symmetry and
-complexity remain contracts only.
+`FeatureProximityObservation`, `SymmetryObservation`, and
+`GeometricComplexityObservation` are currently populated. Analytic curvature
+is limited to planes, cylinders, and spheres. Flat regions merge only
+coplanar, same-solid planar faces connected by a shared source edge.
+
+Symmetry detection is intentionally exact and bounded. It tests only the three
+model-coordinate planes through `GeometrySnapshot.center`, in +X, +Y, +Z
+normal order. A transient forward-oriented material copy is mirrored across
+each candidate, and symmetry is recorded only when mutual B-rep subtraction
+contains no remaining solid. Accepted reflections therefore have a measured
+maximum deviation of zero. Approximate reflection and rotational symmetry are
+not inferred.
+
+Geometric complexity is one source-wide group of four dimensionless counts:
+non-analytic source surfaces, non-analytic readable edge curves, adjacent
+two-face boundaries with a proven tangent discontinuity, and vertices incident
+to more than one surface family. Tangent boundaries with an unproven
+higher-order curvature change are conservatively not counted. These values are
+not weighted, normalized, labeled, ranked, or combined into a score.
+
+All analyzers omit unsupported geometry rather than approximating or
+evaluating it.
 
 ### ManufacturingAnalysis: reserved evaluations
 

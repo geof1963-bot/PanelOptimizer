@@ -18,8 +18,10 @@ class GeometricComplexityObservation:
             analytic plane, cylinder, cone, sphere, or torus.
         non_analytic_curve_count: Number of edges not represented by an
             analytic line, circle, ellipse, hyperbola, or parabola.
-        curvature_discontinuity_count: Number of adjacent surface boundaries
-            whose curvature continuity is discontinuous.
+        curvature_discontinuity_count: Number of adjacent two-face boundaries
+            whose exact surface normals prove a tangent, and therefore
+            curvature-continuity, discontinuity. Tangent boundaries with an
+            unproven higher-order curvature jump are not counted.
         mixed_surface_junction_count: Number of vertices joining more than one
             descriptive surface family.
 

@@ -49,10 +49,9 @@ class AnalyzerEngine:
                 present it takes precedence over the constructor dependency.
 
         Returns:
-            A new partial report containing topology plus implemented
-            thickness, clearance, ligament, edge, corner, curvature,
-            flat-region, and feature-proximity observations. Manufacturing
-            and seam stages retain their immutable empty defaults.
+            A new partial report containing topology plus the complete
+            approved GeometricAnalysis observations. Manufacturing and seam
+            stages retain their immutable empty defaults.
 
         Raises:
             ShapeResolutionError: If no callable resolver is available or the

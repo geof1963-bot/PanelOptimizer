@@ -436,8 +436,8 @@ class EdgeCornerCurvatureFlatIntegrationTests(unittest.TestCase):
         self.assertTrue(report.geometric.curvature_observations)
         self.assertTrue(report.geometric.flat_regions)
         self.assertTrue(report.geometric.feature_proximities)
-        self.assertEqual(report.geometric.symmetries, ())
-        self.assertEqual(report.geometric.complexity_indicators, ())
+        self.assertTrue(report.geometric.symmetries)
+        self.assertTrue(report.geometric.complexity_indicators)
         self.assertEqual(report.manufacturing, ManufacturingAnalysis())
         self.assertEqual(report.seam, SeamAnalysis())
 
