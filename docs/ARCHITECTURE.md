@@ -67,7 +67,8 @@ The stages are cumulative contracts, not interchangeable categories:
 4. `ManufacturingAnalysis` interprets upstream evidence against an injected,
    immutable manufacturing profile. Build-envelope, minimum-thickness,
    minimum-ligament, and typed minimum-clearance rules are active.
-5. `SeamAnalysis` will evaluate geometry specifically for seam planning.
+5. `SeamAnalysis` is the inactive, architecture-defined stage for converting
+   upstream facts into non-scoring seam-placement evidence and constraints.
 
 An `AnalysisReport` may be partial while stages are being developed. Empty
 frozen model defaults represent stages that have not been activated.
@@ -98,10 +99,21 @@ remains at its exact model-defined default.
 
 ### PathFinderEngine
 
-- Purpose: create a split plan from completed analysis.
-- Input: `AnalysisReport`.
+- Purpose: generate candidate route geometry and select routes for a split
+  plan using explicit analysis and future scoring results.
+- Inputs: `AnalysisReport` and, when implemented, explicit scoring results.
 - Output: `SplitPlan`.
-- Must not: remeasure geometry, manufacture parts, or apply joinery.
+- Must not: define scoring criteria or weights, remeasure geometry, manufacture
+  parts, or apply joinery.
+
+### Scoring
+
+- Purpose: perform weighted, explainable comparison of generated candidate
+  routes.
+- Inputs: immutable candidate paths, seam evidence, and a scoring profile.
+- Output: score breakdowns and deterministic rankings.
+- Must not: generate route geometry, reinterpret manufacturing facts, mutate
+  seam evidence, select a split plan, or split the source.
 
 ### JoineryEngine
 
@@ -310,20 +322,76 @@ profile. It is evidence for a future split workflow, not an analysis exception,
 seam decision, split request, or application failure. Candidate-part and
 post-split validation are intentionally not implemented here.
 
-### SeamAnalysis: reserved seam evidence
+### SeamAnalysis: seam-placement evidence and constraints
 
-Seam analysis is reserved for interpreting topology and geometry specifically
-for joint visibility and seam placement. It owns safe or forbidden candidate
-zones and their seam-specific rationale.
+Seam analysis is architected to interpret `GeometrySnapshot`,
+`TopologyAnalysis`, `GeometricAnalysis`, and `ManufacturingAnalysis` against an
+immutable `SeamProfile`. It describes where traversal is explicitly allowed,
+preferred, discouraged, or forbidden. It does not generate a seam, choose a
+route, rank alternatives, or claim that an unclassified region is allowed.
+The stage is not yet implemented or activated.
 
-It must not generate paths or rank candidates. Path creation belongs to
-`PathFinderEngine`; scoring belongs to scoring contracts and their future
-engine.
+The focused seam contracts are:
 
-Manufacturing status cannot select a seam or candidate path. Seam analysis may
-consume manufacturing results later, but seam suitability remains a separate
-interpretation. Scoring expresses ranking and preferences only after candidate
-generation; it must not be hidden inside manufacturing severity or status.
+| Contract | Responsibility |
+|---|---|
+| `SeamConstraint` | One enabled profile rule family with explicit hard/advisory level and emitted zone category |
+| `SeamProfile` | Versioned policy identity, deterministic constraint order, and notes; no scoring weights |
+| `SeamEvidence` | One explainable seam-specific interpretation referencing immutable topology, geometry, manufacturing-evaluation, and source-element IDs |
+| `SeamZone` | One static categorized source region or relationship supported by seam evidence |
+| `SeamWarning` | One non-fatal ambiguity or unavailable seam-specific-evidence warning |
+| `SeamAnalysis` | Profile provenance plus ordered evidence, zones, and warnings |
+
+`SeamConstraint.level` distinguishes rule authority without a numeric score:
+
+- `hard` constraints may emit only `forbidden` zones. They prohibit traversal
+  when their future rule is proven.
+- `advisory` constraints may emit `allowed`, `preferred`, or `discouraged`
+  zones. `allowed` means a configured rule explicitly evaluated that region as
+  permissible; it is not inferred from the absence of a prohibition.
+
+Future profile composition and seam analysis must reject inconsistent
+level/category combinations. Profiles enable rule families such as hole or
+cavity avoidance, weak-ligament or manufacturing-failure exclusion,
+boundary-following, curvature-transition, and symmetry evidence. The profile
+contains no manufacturing thresholds, scoring weights, or printer limits.
+
+`SeamEvidence` preserves the responsibility boundary by referencing upstream
+facts rather than copying or recalculating them. For example, a failed
+ligament constraint remains a `ConstraintEvaluation`; future seam analysis may
+reference that evaluation and its ligament observation when emitting a
+forbidden zone. It must not repeat the configured minimum or manufacture a new
+pass/fail result.
+
+`SeamZone` replaces the old `CandidateZone`. It references stable upstream
+region, feature, observation, evaluation, face, edge, or vertex IDs through
+`region_reference_ids` and `SeamEvidence`. It deliberately stores no copied
+boundary-point list, normal, polyline, spline, route segment, or generic
+freeform geometry. A focused immutable spatial contract may be added later
+only when an implemented seam rule proves that identifiers are insufficient.
+
+Visibility remains multi-dimensional evidence rather than a scalar in this
+stage. Future seam rules may describe geometric or curvature continuity,
+contour following, distance from exposed flat regions, proximity to existing
+forms, or symmetry continuity. They may categorize the affected region, but
+they cannot calculate aesthetic quality, path weight, or a final preference.
+
+The downstream separation is explicit:
+
+- `SeamAnalysis` provides categorized facts and hard/advisory constraints.
+- Scoring performs weighted comparison of already generated alternatives.
+- `PathFinderEngine` generates and selects route geometry using analysis and,
+  when applicable, scoring results.
+- `SplitterEngine`, `JoineryEngine`, and `ExportEngine` act only after a route
+  has been selected.
+
+Deterministic future IDs use
+`{source_id}:seam:evidence:{index:04d}`,
+`{source_id}:seam:zone:{index:04d}`, and
+`{source_id}:seam:warning:{index:04d}`. Indices follow immutable seam-profile
+constraint order and canonical upstream-evidence order. No ID may depend on a
+memory address, hash/set iteration, GUI state, document state, timing, score,
+or candidate route.
 
 ## 6. Geometric observation conventions
 
@@ -357,9 +425,11 @@ limits.
 
 - `Common`: points, directions, and bounding boxes.
 - `Geometry`: the source-wide geometry snapshot.
-- `Analysis`: staged report composition plus topology and seam records.
+- `Analysis`: staged report composition plus topology and geometric reports.
 - `Manufacturing`: build-envelope, profile, constraint, evaluation, warning,
   and manufacturing-stage report contracts.
+- `Seam`: seam profile, constraint, evidence, zone, warning, and inactive-stage
+  report contracts.
 - `Thickness`, `Clearance`, `Ligaments`, `Edges`, `Curvature`, `Symmetry`, and
   `Complexity`: focused geometric observation records.
 - `Paths`: unranked candidate path records.
@@ -374,8 +444,11 @@ Models contain no business logic and do not import FreeCAD.
 - Engines communicate through `Core.Models`.
 - Analysis components may consume upstream immutable models but never later
   stage results.
-- A future manufacturing component consumes immutable snapshot, topology,
-  geometry, and profile models directly; it does not import upstream engines.
+- Manufacturing components consume immutable snapshot, topology, geometry,
+  and profile models directly; they do not import upstream engines.
+- A future seam component may consume immutable snapshot, topology, geometry,
+  manufacturing, and seam-profile models directly; it must not import
+  upstream engines or downstream scoring/path modules.
 - Engine modules do not import other engine modules.
 - Commands and GUI contain no analysis or optimization algorithms.
 - Models never know FreeCAD documents or runtime objects.

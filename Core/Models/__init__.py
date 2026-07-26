@@ -3,7 +3,6 @@
 
 from .Analysis import (
     AnalysisReport,
-    CandidateZone,
     CavityFeature,
     ConnectivityEdge,
     ConnectivityGraph,
@@ -12,7 +11,6 @@ from .Analysis import (
     GeometricAnalysis,
     HoleFeature,
     IslandFeature,
-    SeamAnalysis,
     TopologyAnalysis,
 )
 from .Clearance import (
@@ -41,6 +39,14 @@ from .Scoring import (
     ScoreBreakdown,
     ScoringCriterion,
 )
+from .Seam import (
+    SeamAnalysis,
+    SeamConstraint,
+    SeamEvidence,
+    SeamProfile,
+    SeamWarning,
+    SeamZone,
+)
 from .Symmetry import SymmetryObservation
 from .Thickness import ThicknessObservation
 from .Split import (
@@ -56,7 +62,6 @@ __all__ = [
     "BoundingBox",
     "BuildEnvelope",
     "CandidateScore",
-    "CandidateZone",
     "CandidatePath",
     "CavityFeature",
     "ClearanceObservation",
@@ -92,6 +97,11 @@ __all__ = [
     "ScoreBreakdown",
     "ScoringCriterion",
     "SeamAnalysis",
+    "SeamConstraint",
+    "SeamEvidence",
+    "SeamProfile",
+    "SeamWarning",
+    "SeamZone",
     "SplitPlan",
     "SymmetryObservation",
     "ThicknessObservation",

@@ -76,7 +76,7 @@ class AnalyzerEngineTopologyTests(unittest.TestCase):
         self.assertEqual(len(report.topology.dead_ends), 1)
         self.assertTrue(report.geometric.material_ligaments)
         self.assertEqual(report.manufacturing.warnings, ())
-        self.assertEqual(report.seam.safe_zones, ())
+        self.assertEqual(report.seam, SeamAnalysis())
 
     def test_detects_enclosed_cavity_from_inner_shell(self):
         """A closed inner shell is emitted as a cavity with exact volume."""

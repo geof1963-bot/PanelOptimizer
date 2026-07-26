@@ -4,7 +4,6 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Literal
 
 from .Clearance import (
     ClearanceObservation,
@@ -17,6 +16,7 @@ from .Edges import CornerObservation, EdgeObservation
 from .Geometry import GeometrySnapshot
 from .Ligaments import MaterialLigamentObservation
 from .Manufacturing import ManufacturingAnalysis
+from .Seam import SeamAnalysis
 from .Symmetry import SymmetryObservation
 from .Thickness import ThicknessObservation
 
@@ -97,20 +97,6 @@ class ConnectivityGraph:
 
 
 @dataclass(frozen=True, slots=True)
-class CandidateZone:
-    """A region classified as safe or forbidden for future seam planning."""
-
-    zone_id: str
-    classification: Literal["safe", "forbidden"]
-    anchor: Point3D
-    bounding_box: BoundingBox
-    boundary_points: tuple[Point3D, ...]
-    reason: str
-    related_feature_ids: tuple[str, ...]
-    normal: Direction3D | None = None
-
-
-@dataclass(frozen=True, slots=True)
 class TopologyAnalysis:
     """Immutable findings about holes, regions, cavities, and connectivity."""
 
@@ -128,7 +114,7 @@ class GeometricAnalysis:
     Global bounds, dimensions, area, volume, and raw topology counts remain in
     ``GeometrySnapshot``.  Holes, islands, cavities, dead ends, and material
     connectivity remain in ``TopologyAnalysis``.  These empty tuple defaults
-    allow AnalyzerEngine to return a topology-only partial report.
+    allow AnalyzerEngine to return reports while later stages remain inactive.
     """
 
     thickness_observations: tuple[ThicknessObservation, ...] = ()
@@ -141,14 +127,6 @@ class GeometricAnalysis:
     symmetries: tuple[SymmetryObservation, ...] = ()
     feature_proximities: tuple[FeatureProximityObservation, ...] = ()
     complexity_indicators: tuple[GeometricComplexityObservation, ...] = ()
-
-
-@dataclass(frozen=True, slots=True)
-class SeamAnalysis:
-    """Immutable seam-planning evidence without generating seam paths."""
-
-    safe_zones: tuple[CandidateZone, ...] = ()
-    forbidden_zones: tuple[CandidateZone, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
