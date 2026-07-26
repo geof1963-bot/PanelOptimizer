@@ -18,9 +18,9 @@ class ExportArtifact:
 
 @dataclass(frozen=True, slots=True)
 class ExportReport:
-    """The immutable outcome of exporting the parts from one split plan."""
+    """The immutable outcome of exporting parts from one split result."""
 
-    split_plan_id: str
+    split_result_id: str
     output_directory: str
     artifacts: tuple[ExportArtifact, ...]
     warnings: tuple[str, ...] = ()

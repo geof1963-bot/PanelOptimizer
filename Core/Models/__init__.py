@@ -54,6 +54,7 @@ from .Split import (
     JoineryPlan,
     JointSpecification,
     PrintablePart,
+    SplitResult,
     SplitPlan,
 )
 
@@ -103,6 +104,7 @@ __all__ = [
     "SeamWarning",
     "SeamZone",
     "SplitPlan",
+    "SplitResult",
     "SymmetryObservation",
     "ThicknessObservation",
     "TopologyAnalysis",

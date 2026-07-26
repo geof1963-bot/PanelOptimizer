@@ -42,6 +42,27 @@ Current development roadmap:
 - STL export
 - STEP export (future)
 
+## V4.00 functional prototype
+
+The current workbench can perform one deliberately simple end-to-end split:
+
+1. Open a document and select exactly one valid solid panel.
+2. Click **Split and Export Panel**.
+3. PanelOptimizer cuts at the source bounding-box center in X and Y.
+4. The document receives `PanelOptimizer_Result` containing `Part_1` through
+   `Part_4` in lower-left, lower-right, upper-left, upper-right order.
+5. If all four parts satisfy `Settings.Split.MAX_PART_WIDTH/HEIGHT`, choose an
+   existing output directory and receive `Part_1.stl` through `Part_4.stl`.
+
+The source remains visible and unchanged. Oversized result parts remain in the
+document for inspection, but STL export is blocked. Intelligent/curved seams,
+path scoring, and joinery are not implemented in this prototype.
+
+Running the command again safely replaces the geometry of a complete previous
+PanelOptimizer-owned result set. Objects merely named `PanelOptimizer_Result`
+or `Part_1` through `Part_4` without the ownership markers are never deleted or
+overwritten.
+
 ---
 
 # Printing Constraints
@@ -134,13 +155,14 @@ Automatic STL generation.
 
 # Current Version
 
-**V3.01**
+**V4.00**
 
 Status:
 
-- Workbench architecture
-- Core initialization
-- GUI integration
+- Functional deterministic four-part solid split
+- Effective printable-limit validation
+- Transactional four-file STL export
+- Existing analysis architecture
 
 ---
 

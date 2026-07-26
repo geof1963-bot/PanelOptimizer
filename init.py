@@ -11,8 +11,8 @@ License : GPL-3.0-or-later
 """
 
 __title__ = "PanelOptimizer"
-__version__ = "3.01.0"
+__version__ = "4.00.0"
 __author__ = "Geoffroy"
 __license__ = "GPL-3.0-or-later"
 
-VERSION = (3, 1, 0)
+VERSION = (4, 0, 0)

@@ -1,135 +1,119 @@
 # -*- coding: utf-8 -*-
-"""
-PanelOptimizer Workbench
+"""FreeCAD GUI command for the deterministic V4.00 split/export prototype."""
 
-SplitPanelCommand.py
-
-FreeCAD 1.1.x
-"""
+from __future__ import annotations
 
 import os
 
 import FreeCAD
 import FreeCADGui
 
-from PanelOptimizer.Core.Settings import Settings
+from Core.Exceptions import PanelOptimizerError
+from Core.ExportEngine import ExportEngine
+from Core.SplitterEngine import SplitterEngine
+from Core.SplitWorkflow import (
+    SplitDocumentWriter,
+    validate_single_selection,
+)
 
 
 class PanelOptimizerSplitPanelCommand:
-    """
-    Split the selected panel.
-    """
+    """Split one selected solid into four quadrants and export four STLs."""
 
     def GetResources(self):
-
+        """Return command label, tooltip, and optional icon path."""
         icon_path = os.path.join(
             os.path.dirname(os.path.dirname(__file__)),
             "Gui",
             "Resources",
             "icons",
-            "SplitPanel.svg"
+            "SplitPanel.svg",
         )
-
         return {
             "Pixmap": icon_path,
-            "MenuText": "Split Panel",
-            "ToolTip": "Prepare the selected panel for splitting"
+            "MenuText": "Split and Export Panel",
+            "ToolTip": "Split the selected panel into four solids and export STL",
         }
 
     def IsActive(self):
+        """Enable the command whenever a FreeCAD document is active."""
         return FreeCAD.ActiveDocument is not None
 
     def Activated(self):
-
-        doc = FreeCAD.ActiveDocument
-
-        if doc is None:
-            FreeCAD.Console.PrintError(
-                "\nPanelOptimizer : no active document.\n"
-            )
+        """Execute selection, split, document output, validation, and export."""
+        document = FreeCAD.ActiveDocument
+        if document is None:
+            self._error("PanelOptimizer: no active document.")
             return
-
-        selection = FreeCADGui.Selection.getSelection()
-
-        if len(selection) != 1:
-            FreeCAD.Console.PrintError(
-                "\nSelect exactly one solid.\n"
-            )
-            return
-
-        obj = selection[0]
-
-        if not hasattr(obj, "Shape"):
-            FreeCAD.Console.PrintError(
-                "\nSelected object has no Shape.\n"
-            )
-            return
-
-        shape = obj.Shape
-
-        if shape.isNull():
-            FreeCAD.Console.PrintError(
-                "\nInvalid shape.\n"
-            )
-            return
-
-        bbox = shape.BoundBox
-
-        FreeCAD.Console.PrintMessage("\n")
-        FreeCAD.Console.PrintMessage("=========================================\n")
-        FreeCAD.Console.PrintMessage(" PanelOptimizer - Split Panel\n")
-        FreeCAD.Console.PrintMessage("=========================================\n\n")
-
-        FreeCAD.Console.PrintMessage(
-            f"Selected object : {obj.Label}\n"
-        )
-
-        FreeCAD.Console.PrintMessage(
-            f"Bounding Box : "
-            f"{bbox.XLength:.2f} × "
-            f"{bbox.YLength:.2f} × "
-            f"{bbox.ZLength:.2f} mm\n\n"
-        )
-
-        if (
-            bbox.XLength <= Settings.Split.MAX_PART_WIDTH
-            and bbox.YLength <= Settings.Split.MAX_PART_HEIGHT
-        ):
-
-            FreeCAD.Console.PrintMessage(
-                "Panel already printable.\n"
-            )
-
-            return
-
-        FreeCAD.Console.PrintMessage(
-            "Panel exceeds printable size.\n"
-        )
-
-        FreeCAD.Console.PrintMessage(
-            "Preparing split engine...\n"
-        )
 
         try:
+            source_object = validate_single_selection(
+                FreeCADGui.Selection.getSelection()
+            )
+            source_id = str(source_object.Name)
+            execution = SplitterEngine().split_four_quadrants(
+                source_object.Shape,
+                source_id,
+            )
+            output_objects = SplitDocumentWriter().write(document, execution)
 
-            from PanelOptimizer.Core.Splitter import Splitter
+            if not execution.result.all_parts_printable:
+                details = "\n".join(execution.result.validation_messages)
+                self._error(
+                    "PanelOptimizer created four inspection parts, but STL "
+                    "export was blocked by effective printable limits:\n"
+                    + details
+                )
+                return
 
-            splitter = Splitter()
+            output_directory = self._select_output_directory()
+            if not output_directory:
+                FreeCAD.Console.PrintWarning(
+                    "PanelOptimizer: STL export cancelled; four result solids "
+                    "remain in PanelOptimizer_Result.\n"
+                )
+                return
 
-            splitter.prepare(obj)
-
-        except Exception as err:
-
-            FreeCAD.Console.PrintWarning(
-                "\nSplitter module unavailable.\n"
+            report = ExportEngine(execution.resolve_shape).export_parts(
+                execution.result.parts,
+                output_directory,
+                "STL",
+            )
+            FreeCAD.Console.PrintMessage(
+                "PanelOptimizer: split complete. Created "
+                f"{len(output_objects)} solids and exported "
+                f"{len(report.artifacts)} STL files to "
+                f"{report.output_directory}.\n"
+            )
+        except PanelOptimizerError as error:
+            self._error(f"PanelOptimizer: {error}")
+        except Exception as error:
+            self._error(
+                "PanelOptimizer: unexpected split/export failure: "
+                f"{error}"
             )
 
-            FreeCAD.Console.PrintWarning(
-                str(err) + "\n"
-            )
+    @staticmethod
+    def _select_output_directory() -> str:
+        """Ask the user for an explicit existing STL destination directory."""
+        from PySide import QtGui
+
+        selected = QtGui.QFileDialog.getExistingDirectory(
+            None,
+            "Select PanelOptimizer STL output directory",
+            "",
+            QtGui.QFileDialog.ShowDirsOnly,
+        )
+        return str(selected)
+
+    @staticmethod
+    def _error(message: str) -> None:
+        """Emit one concise command failure without changing the source."""
+        FreeCAD.Console.PrintError(message.rstrip() + "\n")
 
 
-FreeCADGui.addCommand(
-    "PanelOptimizer_SplitPanel",
-    PanelOptimizerSplitPanelCommand()
-)
+if hasattr(FreeCADGui, "addCommand"):
+    FreeCADGui.addCommand(
+        "PanelOptimizer_SplitPanel",
+        PanelOptimizerSplitPanelCommand(),
+    )

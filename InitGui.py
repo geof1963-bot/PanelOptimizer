@@ -34,8 +34,8 @@ class PanelOptimizerWorkbench(Workbench):
         Called once when the workbench is loaded.
         """
 
-        import PanelOptimizer.Commands.AnalyzeCommand
-        import PanelOptimizer.Commands.SplitPanelCommand
+        import Commands.AnalyzeCommand
+        import Commands.SplitPanelCommand
 
         self.command_list = [
             "PanelOptimizer_Analyze",
@@ -55,7 +55,7 @@ class PanelOptimizerWorkbench(Workbench):
         FreeCAD.Console.PrintMessage(
             "\n"
             "=========================================\n"
-            " PanelOptimizer Workbench V3.01 loaded\n"
+            " PanelOptimizer Workbench V4.00 loaded\n"
             "=========================================\n"
         )
 

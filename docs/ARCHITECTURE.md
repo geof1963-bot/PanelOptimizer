@@ -47,6 +47,20 @@ from completed analysis. `JoineryEngine` describes joints for an approved split
 plan. `SplitterEngine` creates new printable geometry. `ExportEngine` writes
 approved results.
 
+V4.00 also provides a deliberately bounded prototype path that bypasses the
+unimplemented intelligent path, scoring, and joinery stages:
+
+```text
+one selected solid
+    -> bounding-box center X/Y split
+    -> four validated quadrant solids
+    -> effective X/Y limit validation
+    -> four STL files
+```
+
+This prototype is not evidence that `PathFinderEngine`, scoring,
+`SeamAnalysis`, or `JoineryEngine` has been implemented.
+
 ### Analyzer stages
 
 ```mermaid
@@ -124,18 +138,67 @@ remains at its exact model-defined default.
 
 ### SplitterEngine
 
-- Purpose: create printable-part geometry from approved plans.
-- Inputs: geometry identity, `SplitPlan`, `JoineryPlan`, and an injected shape
-  resolver.
+- Purpose: create printable-part geometry. V4.00 implements only the fixed
+  four-quadrant center-plane prototype; future planned paths remain reserved.
+- Prototype inputs: one caller-owned solid, its stable source ID, and
+  authoritative `Settings.Split` effective X/Y limits.
 - Output: immutable `PrintablePart` records referencing created geometry.
 - Must not: score plans, perform analysis, or export files.
 
 ### ExportEngine
 
 - Purpose: serialize approved printable parts and report emitted artifacts.
-- Inputs: `PrintablePart` records and export destination.
+- Inputs: exactly four validated `PrintablePart` records, an explicit
+  caller-selected destination, and an injected runtime shape resolver.
 - Output: `ExportReport`.
 - Must not: analyze, plan, split, or modify part design.
+
+### V4.00 fixed split prototype
+
+`SplitterEngine.split_four_quadrants` validates that the source contains
+exactly one valid non-empty solid. It calculates X/Y cuts at the source
+axis-aligned bounding-box center and intersects the source B-rep with four
+exact full-Z quadrant prisms. It never meshes, fills, simplifies, or modifies
+the caller's source. Existing holes and other boundary geometry are therefore
+preserved by OpenCASCADE boolean intersection.
+
+Quadrant order is deterministic in model coordinates:
+
+1. `Part_1`: lower-left
+2. `Part_2`: lower-right
+3. `Part_3`: upper-left
+4. `Part_4`: upper-right
+
+Every result must be one non-empty valid solid. Pairwise common volume must be
+within the centralized geometry-only kernel tolerance, and the sum of result
+volumes must equal source volume within
+`max(1e-6 mm3, source_volume * 1e-9)`. These values validate B-rep operations;
+they are not manufacturing allowances.
+
+Each `PrintablePart` records its source/result relationship, quadrant, bounds,
+X/Y/Z dimensions, volume, independent X/Y limit outcomes, overall printable
+state, and validation messages. The effective limits come only from
+`Settings.Split.MAX_PART_WIDTH/HEIGHT`; legacy
+`Settings.Printer.MAX_PART_SIZE` is not read. Oversized results remain valid
+inspection geometry but are blocked from STL export.
+
+`SplitExecution` pairs the immutable `SplitResult` with four runtime FreeCAD
+shapes outside `Core.Models`. `SplitDocumentWriter` creates the group
+`PanelOptimizer_Result` and exactly four visible `Part::Feature` objects. It
+does not hide, replace, or delete the selected source. The group and parts
+carry explicit PanelOptimizer ownership and provenance properties. A repeated
+run updates only a complete ownership-marked result set in place, using B-rep
+backups and a FreeCAD transaction so failure restores the previous valid
+shapes. Delete-and-recreate was rejected because FreeCAD transaction abort did
+not reliably restore group membership for reused object names. Unowned,
+incomplete, or altered reserved-name sets fail before document mutation.
+
+`ExportEngine` supports STL only in V4.00. It resolves each part through its
+opaque geometry reference, writes four partial files, validates non-empty
+content, and only then atomically finalizes `Part_1.stl` through `Part_4.stl`.
+Known partial files are removed on failure, and pre-existing final files are
+restored if finalization fails. The command always asks the user for an
+existing output directory; it never chooses a hidden temporary destination.
 
 ## 5. Analysis responsibility boundaries
 
@@ -434,7 +497,8 @@ limits.
   `Complexity`: focused geometric observation records.
 - `Paths`: unranked candidate path records.
 - `Scoring`: explainable scoring and ranking records.
-- `Split`: split, joinery, and printable-part plans.
+- `Split`: future split/joinery plans plus V4.00 printable-part and fixed-split
+  result records.
 - `Export`: exported artifact and report records.
 
 Models contain no business logic and do not import FreeCAD.

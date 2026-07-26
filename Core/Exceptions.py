@@ -86,6 +86,36 @@ class SplitterError(PanelOptimizerError):
     pass
 
 
+class InvalidSelectionError(SplitterError):
+    """Raised when the split command does not receive exactly one source."""
+    pass
+
+
+class SplitSourceError(SplitterError):
+    """Raised when selected geometry cannot be used as one solid source."""
+    pass
+
+
+class SplitOperationError(SplitterError):
+    """Raised when the requested boolean split cannot complete reliably."""
+    pass
+
+
+class UnexpectedPartCountError(SplitOperationError):
+    """Raised when a split does not produce exactly four quadrant parts."""
+    pass
+
+
+class InvalidResultingSolidError(SplitOperationError):
+    """Raised when a produced quadrant is empty, invalid, or not one solid."""
+    pass
+
+
+class PrintableLimitViolation(SplitterError):
+    """Raised when a workflow attempts to export an oversized result part."""
+    pass
+
+
 class JoineryError(PanelOptimizerError):
     """Joinery related error."""
     pass
@@ -93,6 +123,11 @@ class JoineryError(PanelOptimizerError):
 
 class ExportError(PanelOptimizerError):
     """Export related error."""
+    pass
+
+
+class STLExportError(ExportError):
+    """Raised when transactional STL export cannot complete."""
     pass
 
 
