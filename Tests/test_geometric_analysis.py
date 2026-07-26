@@ -393,7 +393,7 @@ class GeometricAnalysisIntegrationTests(unittest.TestCase):
         )
 
     def test_partial_pipeline_populates_only_implemented_geometry(self):
-        """Topology and four geometry collections precede default later stages."""
+        """Topology and eight geometry collections precede later defaults."""
         holes = Part.makeCylinder(2, 8, Vector(8, 10, 0)).fuse(
             Part.makeCylinder(2, 8, Vector(20, 10, 0))
         )
@@ -412,10 +412,10 @@ class GeometricAnalysisIntegrationTests(unittest.TestCase):
         self.assertTrue(report.geometric.thickness_observations)
         self.assertTrue(report.geometric.clearance_observations)
         self.assertTrue(report.geometric.material_ligaments)
-        self.assertEqual(report.geometric.edge_observations, ())
-        self.assertEqual(report.geometric.corner_observations, ())
-        self.assertEqual(report.geometric.curvature_observations, ())
-        self.assertEqual(report.geometric.flat_regions, ())
+        self.assertTrue(report.geometric.edge_observations)
+        self.assertTrue(report.geometric.corner_observations)
+        self.assertTrue(report.geometric.curvature_observations)
+        self.assertTrue(report.geometric.flat_regions)
         self.assertEqual(report.geometric.symmetries, ())
         self.assertTrue(report.geometric.feature_proximities)
         self.assertEqual(report.geometric.complexity_indicators, ())

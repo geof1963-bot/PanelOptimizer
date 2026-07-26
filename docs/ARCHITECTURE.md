@@ -71,10 +71,10 @@ The stages are cumulative contracts, not interchangeable categories:
 An `AnalysisReport` may be partial while stages are being developed. Empty
 frozen model defaults represent stages that have not been activated.
 The current `AnalyzerEngine` activates `TopologyAnalysis`, then thickness,
-clearance, material-ligament, and feature-proximity observations in
-`GeometricAnalysis`. The remaining geometric collections,
-`ManufacturingAnalysis`, and `SeamAnalysis` remain at their model-defined
-defaults.
+clearance, material-ligament, edge, corner, curvature, flat-region, and
+feature-proximity observations in `GeometricAnalysis`. The remaining geometric
+collections, `ManufacturingAnalysis`, and `SeamAnalysis` remain at their
+model-defined defaults.
 
 ## 4. Engine responsibilities
 
@@ -178,11 +178,14 @@ distance. It records the broader topology-feature relationship and never
 performs a competing measurement. Hole-to-cavity and cavity-to-cavity
 proximities instead use exact B-rep nearest-boundary distance.
 
-Only `ThicknessObservation`, `ClearanceObservation`,
-`MaterialLigamentObservation`, and `FeatureProximityObservation` are currently
-populated. Their analyzers conservatively omit geometry when an exact,
-supported local measurement cannot be established. The other observation
-types remain contracts only.
+`ThicknessObservation`, `ClearanceObservation`,
+`MaterialLigamentObservation`, `EdgeObservation`, `CornerObservation`,
+`CurvatureObservation`, `FlatRegionObservation`, and
+`FeatureProximityObservation` are currently populated. Analytic curvature is
+limited to planes, cylinders, and spheres. Flat regions merge only coplanar,
+same-solid planar faces connected by a shared source edge. All analyzers omit
+unsupported geometry rather than approximating or evaluating it. Symmetry and
+complexity remain contracts only.
 
 ### ManufacturingAnalysis: reserved evaluations
 

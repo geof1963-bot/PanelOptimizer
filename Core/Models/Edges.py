@@ -50,11 +50,14 @@ class CornerObservation:
             source-vertex order.
         source_vertex_id: Stable source-topology vertex identifier.
         position: Vertex position in model coordinates and mm.
-        angle_degrees: Observed local included angle, in degrees.
+        angle_degrees: Observed local included angle between directions away
+            from the vertex, in the inclusive range 0 through 180 degrees.
         incident_edge_ids: Stable source edge IDs participating in the angle.
         related_feature_ids: Topology feature IDs containing the corner.
 
-    This local angle carries no sharpness threshold or manufacturing verdict.
+    Canonical edge ordering affects only identifier order, not the outward
+    directions or angle.  This local angle carries no sharpness threshold or
+    manufacturing verdict.
     """
 
     observation_id: str

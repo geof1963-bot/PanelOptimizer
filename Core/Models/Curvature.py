@@ -18,15 +18,16 @@ class CurvatureObservation:
             source-face and sample order.
         source_face_id: Stable source-topology face identifier.
         location: Sample position in model coordinates and mm.
-        normal: Unit surface normal in model coordinates.
+        normal: Unit surface normal in model coordinates, canonicalized so
+            its first non-zero component is positive.
         first_principal_direction: Unit direction of the first principal
             curvature in model coordinates.
         second_principal_direction: Unit direction of the second principal
             curvature in model coordinates.
         first_principal_curvature_per_mm: Signed first principal curvature,
-            in inverse millimetres.
+            in inverse millimetres and relative to ``normal``.
         second_principal_curvature_per_mm: Signed second principal curvature,
-            in inverse millimetres.
+            in inverse millimetres and relative to ``normal``.
         related_feature_ids: Topology feature IDs containing the sample.
 
     This is a local differential observation.  It contains no curvature score

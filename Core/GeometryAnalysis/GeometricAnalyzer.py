@@ -6,6 +6,10 @@ from __future__ import annotations
 from ..Exceptions import GeometricAnalysisError
 from ..Models import GeometricAnalysis, GeometrySnapshot, TopologyAnalysis
 from .ClearanceAnalyzer import ClearanceAnalyzer
+from .CornerAnalyzer import CornerAnalyzer
+from .CurvatureAnalyzer import CurvatureAnalyzer
+from .EdgeAnalyzer import EdgeAnalyzer
+from .FlatRegionAnalyzer import FlatRegionAnalyzer
 from .LigamentAnalyzer import LigamentAnalyzer
 from .ProximityAnalyzer import ProximityAnalyzer
 from .ThicknessAnalyzer import ThicknessAnalyzer
@@ -49,6 +53,26 @@ class GeometricAnalyzer:
                     geometry,
                     topology,
                     clearance_observations,
+                ),
+                edge_observations=EdgeAnalyzer().analyze(
+                    geometry,
+                    topology,
+                    shape,
+                ),
+                corner_observations=CornerAnalyzer().analyze(
+                    geometry,
+                    topology,
+                    shape,
+                ),
+                curvature_observations=CurvatureAnalyzer().analyze(
+                    geometry,
+                    topology,
+                    shape,
+                ),
+                flat_regions=FlatRegionAnalyzer().analyze(
+                    geometry,
+                    topology,
+                    shape,
                 ),
                 feature_proximities=ProximityAnalyzer().analyze(
                     geometry,
