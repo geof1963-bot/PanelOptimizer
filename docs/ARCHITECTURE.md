@@ -70,10 +70,11 @@ The stages are cumulative contracts, not interchangeable categories:
 
 An `AnalysisReport` may be partial while stages are being developed. Empty
 frozen model defaults represent stages that have not been activated.
-The current `AnalyzerEngine` activates `TopologyAnalysis`, then the thickness
-and clearance portions of `GeometricAnalysis`. The remaining geometric
-collections, `ManufacturingAnalysis`, and `SeamAnalysis` remain at their
-model-defined defaults.
+The current `AnalyzerEngine` activates `TopologyAnalysis`, then thickness,
+clearance, material-ligament, and feature-proximity observations in
+`GeometricAnalysis`. The remaining geometric collections,
+`ManufacturingAnalysis`, and `SeamAnalysis` remain at their model-defined
+defaults.
 
 ## 4. Engine responsibilities
 
@@ -171,7 +172,14 @@ clearance owns the separation relationship, while the ligament owns material
 continuity. A ligament does not imply that its width is thin, wide, adequate,
 or unsuitable.
 
-Only `ThicknessObservation` and `ClearanceObservation` are currently
+For an implemented hole-to-hole relationship,
+`FeatureProximityObservation` also reuses the exact clearance endpoints and
+distance. It records the broader topology-feature relationship and never
+performs a competing measurement. Hole-to-cavity and cavity-to-cavity
+proximities instead use exact B-rep nearest-boundary distance.
+
+Only `ThicknessObservation`, `ClearanceObservation`,
+`MaterialLigamentObservation`, and `FeatureProximityObservation` are currently
 populated. Their analyzers conservatively omit geometry when an exact,
 supported local measurement cannot be established. The other observation
 types remain contracts only.

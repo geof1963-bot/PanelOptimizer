@@ -24,7 +24,7 @@ from Core.Topology import TopologyAnalyzer
 
 @unittest.skipIf(Part is None, "FreeCAD Part module is unavailable")
 class GeometricAnalysisIntegrationTests(unittest.TestCase):
-    """Verify only implemented thickness and clearance observations."""
+    """Verify implemented geometric observations and pipeline defaults."""
 
     @staticmethod
     def _analyze(shape, source_id="panel"):
@@ -393,7 +393,7 @@ class GeometricAnalysisIntegrationTests(unittest.TestCase):
         )
 
     def test_partial_pipeline_populates_only_implemented_geometry(self):
-        """Topology and two geometry collections precede default later stages."""
+        """Topology and four geometry collections precede default later stages."""
         holes = Part.makeCylinder(2, 8, Vector(8, 10, 0)).fuse(
             Part.makeCylinder(2, 8, Vector(20, 10, 0))
         )
@@ -411,13 +411,13 @@ class GeometricAnalysisIntegrationTests(unittest.TestCase):
         self.assertEqual(report.topology, topology_before)
         self.assertTrue(report.geometric.thickness_observations)
         self.assertTrue(report.geometric.clearance_observations)
-        self.assertEqual(report.geometric.material_ligaments, ())
+        self.assertTrue(report.geometric.material_ligaments)
         self.assertEqual(report.geometric.edge_observations, ())
         self.assertEqual(report.geometric.corner_observations, ())
         self.assertEqual(report.geometric.curvature_observations, ())
         self.assertEqual(report.geometric.flat_regions, ())
         self.assertEqual(report.geometric.symmetries, ())
-        self.assertEqual(report.geometric.feature_proximities, ())
+        self.assertTrue(report.geometric.feature_proximities)
         self.assertEqual(report.geometric.complexity_indicators, ())
         self.assertEqual(report.manufacturing, ManufacturingAnalysis())
         self.assertEqual(report.seam, SeamAnalysis())

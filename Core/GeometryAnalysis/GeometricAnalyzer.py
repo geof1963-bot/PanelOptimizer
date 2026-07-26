@@ -6,6 +6,8 @@ from __future__ import annotations
 from ..Exceptions import GeometricAnalysisError
 from ..Models import GeometricAnalysis, GeometrySnapshot, TopologyAnalysis
 from .ClearanceAnalyzer import ClearanceAnalyzer
+from .LigamentAnalyzer import LigamentAnalyzer
+from .ProximityAnalyzer import ProximityAnalyzer
 from .ThicknessAnalyzer import ThicknessAnalyzer
 
 __all__ = ["GeometricAnalyzer"]
@@ -20,7 +22,7 @@ class GeometricAnalyzer:
         topology: TopologyAnalysis,
         shape: object,
     ) -> GeometricAnalysis:
-        """Return thickness and clearance observations for one source shape.
+        """Return all currently implemented observations for one source shape.
 
         All other GeometricAnalysis collections retain their exact model
         defaults until their dedicated components are implemented.
@@ -30,16 +32,29 @@ class GeometricAnalyzer:
                 implemented geometric observations from being completed.
         """
         try:
+            thickness_observations = ThicknessAnalyzer().analyze(
+                geometry,
+                topology,
+                shape,
+            )
+            clearance_observations = ClearanceAnalyzer().analyze(
+                geometry,
+                topology,
+                shape,
+            )
             return GeometricAnalysis(
-                thickness_observations=ThicknessAnalyzer().analyze(
+                thickness_observations=thickness_observations,
+                clearance_observations=clearance_observations,
+                material_ligaments=LigamentAnalyzer().analyze(
                     geometry,
                     topology,
-                    shape,
+                    clearance_observations,
                 ),
-                clearance_observations=ClearanceAnalyzer().analyze(
+                feature_proximities=ProximityAnalyzer().analyze(
                     geometry,
                     topology,
                     shape,
+                    clearance_observations,
                 ),
             )
         except GeometricAnalysisError:

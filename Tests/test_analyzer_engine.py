@@ -74,7 +74,7 @@ class AnalyzerEngineTopologyTests(unittest.TestCase):
             {True, False},
         )
         self.assertEqual(len(report.topology.dead_ends), 1)
-        self.assertEqual(report.geometric.material_ligaments, ())
+        self.assertTrue(report.geometric.material_ligaments)
         self.assertEqual(report.manufacturing.warnings, ())
         self.assertEqual(report.seam.safe_zones, ())
 

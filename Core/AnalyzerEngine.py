@@ -50,8 +50,9 @@ class AnalyzerEngine:
 
         Returns:
             A new partial report containing topology plus implemented
-            thickness and clearance observations.  Manufacturing and seam
-            stages retain their immutable empty defaults.
+            thickness, clearance, ligament, and feature-proximity
+            observations. Manufacturing and seam stages retain their
+            immutable empty defaults.
 
         Raises:
             ShapeResolutionError: If no callable resolver is available or the
