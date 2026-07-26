@@ -44,10 +44,12 @@ class PanelOptimizerWorkbench(Workbench):
         """
 
         import Commands.AnalyzeCommand
+        import Commands.GeometryDiagnosticCommand
         import Commands.SplitPanelCommand
 
         self.command_list = [
             "PanelOptimizer_Analyze",
+            "PanelOptimizer_DiagnoseGeometry",
             "PanelOptimizer_SplitPanel",
         ]
 

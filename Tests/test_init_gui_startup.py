@@ -48,12 +48,16 @@ class InitGuiStartupTests(unittest.TestCase):
         commands = types.ModuleType("Commands")
         commands.__path__ = ()
         analyze_command = types.ModuleType("Commands.AnalyzeCommand")
+        diagnostic_command = types.ModuleType(
+            "Commands.GeometryDiagnosticCommand"
+        )
         split_command = types.ModuleType("Commands.SplitPanelCommand")
         module_stubs = {
             "FreeCAD": freecad,
             "FreeCADGui": freecad_gui,
             "Commands": commands,
             "Commands.AnalyzeCommand": analyze_command,
+            "Commands.GeometryDiagnosticCommand": diagnostic_command,
             "Commands.SplitPanelCommand": split_command,
         }
         source_path = Path(__file__).resolve().parents[1] / "InitGui.py"
@@ -106,6 +110,7 @@ class InitGuiStartupTests(unittest.TestCase):
 
         expected_commands = (
             "PanelOptimizer_Analyze",
+            "PanelOptimizer_DiagnoseGeometry",
             "PanelOptimizer_SplitPanel",
         )
         self.assertEqual(
