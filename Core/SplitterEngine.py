@@ -14,6 +14,7 @@ from .Exceptions import (
 )
 from .Models import BoundingBox, Point3D, PrintablePart, SplitResult
 from .Settings import Settings
+from .SourceShapeResolver import resolve_source_shape
 from .SplittingUtilities import (
     finite_positive,
     format_mm,
@@ -186,30 +187,10 @@ class SplitterEngine:
     @staticmethod
     def _validated_source_solid(shape: object) -> object:
         """Return the one caller-owned source solid after conservative checks."""
-        if shape is None:
-            raise SplitSourceError("Selected object has no shape.")
         try:
-            if bool(shape.isNull()):
-                raise SplitSourceError("Selected shape is null.")
-            if not bool(shape.isValid()):
-                raise SplitSourceError("Selected shape is invalid.")
-            solids = tuple(shape.Solids)
-        except SplitSourceError:
-            raise
+            return resolve_source_shape(shape).shape
         except Exception as error:
-            raise SplitSourceError(
-                "Selected shape cannot provide valid solid topology."
-            ) from error
-        if not solids:
-            raise SplitSourceError("Selected shape contains no solid.")
-        if len(solids) != 1:
-            raise SplitSourceError(
-                "The straight-cut prototype requires exactly one source solid."
-            )
-        solid = solids[0]
-        if bool(solid.isNull()) or not bool(solid.isValid()):
-            raise SplitSourceError("Selected source solid is invalid.")
-        return solid
+            raise SplitSourceError(str(error)) from error
 
     @staticmethod
     def _intersect_quadrant(

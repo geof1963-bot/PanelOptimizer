@@ -4,9 +4,14 @@
 from __future__ import annotations
 
 from .Exceptions import InvalidSelectionError, SplitOperationError
+from .SourceShapeResolver import ResolvedSourceShape, resolve_source_shape
 from .SplitterEngine import SplitExecution
 
-__all__ = ["SplitDocumentWriter", "validate_single_selection"]
+__all__ = [
+    "SplitDocumentWriter",
+    "resolve_selected_shape",
+    "validate_single_selection",
+]
 
 
 def validate_single_selection(selection: object) -> object:
@@ -30,6 +35,13 @@ def validate_single_selection(selection: object) -> object:
     if not hasattr(source_object, "Shape"):
         raise InvalidSelectionError("Selected object has no Shape.")
     return source_object
+
+
+def resolve_selected_shape(source_object: object) -> ResolvedSourceShape:
+    """Resolve a selected object's shape with the shared V4.00 policy."""
+    if source_object is None or not hasattr(source_object, "Shape"):
+        raise InvalidSelectionError("Selected object has no Shape.")
+    return resolve_source_shape(source_object.Shape)
 
 
 class SplitDocumentWriter:

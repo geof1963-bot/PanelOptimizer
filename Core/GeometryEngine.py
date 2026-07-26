@@ -14,6 +14,7 @@ from .Exceptions import (
     NullShapeError,
 )
 from .Models import BoundingBox, GeometrySnapshot, Point3D
+from .SourceShapeResolver import resolve_source_shape
 
 __all__ = ["GeometryEngine"]
 
@@ -26,6 +27,7 @@ class GeometryEngine:
         shape: object,
         source_id: str,
         source_label: str,
+        validation_messages: tuple[str, ...] = (),
     ) -> GeometrySnapshot:
         """Measure a FreeCAD shape and return a new immutable snapshot.
 
@@ -33,6 +35,8 @@ class GeometryEngine:
             shape: The caller-owned FreeCAD shape to measure.
             source_id: A stable identifier for the source shape.
             source_label: A human-readable label for the source shape.
+            validation_messages: Immutable source-resolution facts to retain
+                in the snapshot, such as valid contained-solid extraction.
 
         Returns:
             A newly created GeometrySnapshot containing topology, bounds,
@@ -49,7 +53,17 @@ class GeometryEngine:
         logger = logging.getLogger(self.__class__.__name__)
 
         try:
-            self._validate_shape(shape)
+            resolution_messages: tuple[str, ...] = ()
+            if (
+                shape is not None
+                and not bool(shape.isNull())
+                and bool(shape.isValid())
+            ):
+                self._validate_shape(shape)
+            else:
+                resolution = resolve_source_shape(shape)
+                shape = resolution.shape
+                resolution_messages = resolution.messages
 
             face_count = len(shape.Faces)
             edge_count = len(shape.Edges)
@@ -106,6 +120,9 @@ class GeometryEngine:
                 shape_type=self._shape_type(shape),
                 is_closed=self._closed_state(shape),
                 is_valid=True,
+                validation_messages=(
+                    tuple(validation_messages) + resolution_messages
+                ),
             )
         except GeometryError:
             logger.error("Unable to measure geometry '%s'.", source_id)
@@ -119,7 +136,7 @@ class GeometryEngine:
 
     @staticmethod
     def _validate_shape(shape: object) -> None:
-        """Validate null state, validity, and supported topological type."""
+        """Validate a directly measurable shape without resolving containers."""
         if shape is None:
             raise NullShapeError("Shape is missing.")
 

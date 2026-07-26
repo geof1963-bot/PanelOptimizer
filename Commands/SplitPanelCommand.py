@@ -13,6 +13,7 @@ from Core.ExportEngine import ExportEngine
 from Core.SplitterEngine import SplitterEngine
 from Core.SplitWorkflow import (
     SplitDocumentWriter,
+    resolve_selected_shape,
     validate_single_selection,
 )
 
@@ -51,8 +52,13 @@ class PanelOptimizerSplitPanelCommand:
                 FreeCADGui.Selection.getSelection()
             )
             source_id = str(source_object.Name)
+            resolution = resolve_selected_shape(source_object)
+            for message in resolution.messages:
+                FreeCAD.Console.PrintMessage(
+                    f"PanelOptimizer: {message}\n"
+                )
             execution = SplitterEngine().split_four_quadrants(
-                source_object.Shape,
+                resolution.shape,
                 source_id,
             )
             output_objects = SplitDocumentWriter().write(document, execution)

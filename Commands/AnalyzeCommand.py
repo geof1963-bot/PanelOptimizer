@@ -14,6 +14,7 @@ import FreeCADGui
 
 from Core.AnalyzerEngine import AnalyzerEngine
 from Core.GeometryEngine import GeometryEngine
+from Core.SourceShapeResolver import resolve_source_shape
 
 
 class PanelOptimizerAnalyzeCommand:
@@ -132,12 +133,20 @@ class PanelOptimizerAnalyzeCommand:
 
         try:
             source_id = str(obj.Name)
+            resolution = resolve_source_shape(shape)
+            for message in resolution.messages:
+                FreeCAD.Console.PrintMessage(
+                    f"PanelOptimizer: {message}\n"
+                )
             snapshot = GeometryEngine().create_snapshot(
-                shape,
+                resolution.shape,
                 source_id,
                 str(obj.Label),
+                validation_messages=resolution.messages,
             )
-            AnalyzerEngine(lambda resolved_id: shape).analyze(snapshot)
+            AnalyzerEngine(
+                lambda resolved_id: resolution.shape
+            ).analyze(snapshot)
 
         except Exception as err:
 
