@@ -12,6 +12,10 @@ from Core.TopologyDiagnostic import (
     format_topology_diagnostic,
     inspect_topology,
 )
+from Core.PlanarFaceDiagnostic import (
+    format_invalid_planar_face_diagnostic,
+    inspect_invalid_planar_faces,
+)
 
 
 class PanelOptimizerGeometryDiagnosticCommand:
@@ -40,8 +44,12 @@ class PanelOptimizerGeometryDiagnosticCommand:
             if len(selection) != 1 or not hasattr(selection[0], "Shape"):
                 raise ValueError("Select exactly one object with a Shape.")
             report = inspect_topology(selection[0].Shape)
+            output = format_topology_diagnostic(report)
+            if report.invalid_faces:
+                detail = inspect_invalid_planar_faces(selection[0].Shape)
+                output += "\n" + format_invalid_planar_face_diagnostic(detail)
             FreeCAD.Console.PrintMessage(
-                "\n" + format_topology_diagnostic(report)
+                "\n" + output
             )
         except Exception as error:
             FreeCAD.Console.PrintError(

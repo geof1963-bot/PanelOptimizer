@@ -9,8 +9,10 @@ from unittest.mock import patch
 
 try:
     import Part
+    from FreeCAD import Vector
 except ImportError:  # pragma: no cover - exercised outside FreeCAD
     Part = None
+    Vector = None
 
 from Core.TopologyDiagnostic import (
     format_topology_diagnostic,
@@ -170,6 +172,39 @@ class TopologyDiagnosticTests(unittest.TestCase):
         self.assertEqual(len(messages), 1)
         self.assertIn("PanelOptimizer Geometry Diagnostic", messages[0])
         self.assertLessEqual(messages[0].count("\n- "), 20)
+
+    def test_diagnostic_command_appends_invalid_planar_face_detail(self):
+        import Commands.GeometryDiagnosticCommand as command_module
+
+        points = (
+            (0, 0, 1.4),
+            (10, 10, 1.4),
+            (0, 10, 1.4),
+            (10, 0, 1.4),
+            (0, 0, 1.4),
+        )
+        wire = Part.makePolygon([Vector(*point) for point in points])
+        selected = SimpleNamespace(Shape=Part.makeCompound((Part.Face(wire),)))
+        messages = []
+        freecad_stub = SimpleNamespace(
+            ActiveDocument=object(),
+            Console=SimpleNamespace(
+                PrintMessage=messages.append,
+                PrintError=lambda message: self.fail(message),
+            ),
+        )
+        gui_stub = SimpleNamespace(
+            Selection=SimpleNamespace(getSelection=lambda: (selected,)),
+        )
+
+        with patch.object(command_module, "FreeCAD", freecad_stub), patch.object(
+            command_module, "FreeCADGui", gui_stub
+        ):
+            command_module.PanelOptimizerGeometryDiagnosticCommand().Activated()
+
+        self.assertEqual(len(messages), 1)
+        self.assertIn("Invalid planar-face detail: 1 total; showing 1.", messages[0])
+        self.assertIn("self_intersecting_wire", messages[0])
 
 
 if __name__ == "__main__":
