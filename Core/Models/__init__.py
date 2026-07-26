@@ -12,8 +12,6 @@ from .Analysis import (
     GeometricAnalysis,
     HoleFeature,
     IslandFeature,
-    ManufacturingAnalysis,
-    ManufacturingWarning,
     SeamAnalysis,
     TopologyAnalysis,
 )
@@ -28,6 +26,14 @@ from .Edges import CornerObservation, EdgeObservation
 from .Export import ExportArtifact, ExportReport
 from .Geometry import GeometrySnapshot
 from .Ligaments import MaterialLigamentObservation
+from .Manufacturing import (
+    BuildEnvelope,
+    ConstraintEvaluation,
+    ManufacturingAnalysis,
+    ManufacturingConstraint,
+    ManufacturingProfile,
+    ManufacturingWarning,
+)
 from .Paths import CandidatePath
 from .Scoring import (
     CandidateScore,
@@ -48,6 +54,7 @@ from .Split import (
 __all__ = [
     "AnalysisReport",
     "BoundingBox",
+    "BuildEnvelope",
     "CandidateScore",
     "CandidateZone",
     "CandidatePath",
@@ -56,6 +63,7 @@ __all__ = [
     "ConnectivityEdge",
     "ConnectivityGraph",
     "ConnectivityNode",
+    "ConstraintEvaluation",
     "CornerObservation",
     "CurvatureObservation",
     "DeadEndRegion",
@@ -74,6 +82,8 @@ __all__ = [
     "JoineryPlan",
     "JointSpecification",
     "ManufacturingAnalysis",
+    "ManufacturingConstraint",
+    "ManufacturingProfile",
     "ManufacturingWarning",
     "MaterialLigamentObservation",
     "PathRanking",

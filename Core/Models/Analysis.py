@@ -16,6 +16,7 @@ from .Curvature import CurvatureObservation, FlatRegionObservation
 from .Edges import CornerObservation, EdgeObservation
 from .Geometry import GeometrySnapshot
 from .Ligaments import MaterialLigamentObservation
+from .Manufacturing import ManufacturingAnalysis
 from .Symmetry import SymmetryObservation
 from .Thickness import ThicknessObservation
 
@@ -110,19 +111,6 @@ class CandidateZone:
 
 
 @dataclass(frozen=True, slots=True)
-class ManufacturingWarning:
-    """A structured manufacturing concern found during analysis."""
-
-    warning_id: str
-    category: str
-    severity: str
-    message: str
-    related_feature_ids: tuple[str, ...]
-    location: Point3D | None = None
-    bounding_box: BoundingBox | None = None
-
-
-@dataclass(frozen=True, slots=True)
 class TopologyAnalysis:
     """Immutable findings about holes, regions, cavities, and connectivity."""
 
@@ -153,13 +141,6 @@ class GeometricAnalysis:
     symmetries: tuple[SymmetryObservation, ...] = ()
     feature_proximities: tuple[FeatureProximityObservation, ...] = ()
     complexity_indicators: tuple[GeometricComplexityObservation, ...] = ()
-
-
-@dataclass(frozen=True, slots=True)
-class ManufacturingAnalysis:
-    """Immutable manufacturing concerns without making split decisions."""
-
-    warnings: tuple[ManufacturingWarning, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)

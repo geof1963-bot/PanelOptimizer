@@ -64,8 +64,9 @@ The stages are cumulative contracts, not interchangeable categories:
 2. `TopologyAnalysis` owns structural facts and connectivity.
 3. `GeometricAnalysis` owns local measurements and descriptive geometric
    observations.
-4. `ManufacturingAnalysis` will evaluate observations against a manufacturing
-   context.
+4. `ManufacturingAnalysis` interprets upstream evidence against an injected,
+   immutable manufacturing profile. Its contracts are defined, but its
+   analyzer is not yet implemented or activated.
 5. `SeamAnalysis` will evaluate geometry specifically for seam planning.
 
 An `AnalysisReport` may be partial while stages are being developed. Empty
@@ -207,13 +208,54 @@ evaluating it.
 ### ManufacturingAnalysis: reserved evaluations
 
 Manufacturing analysis is reserved for interpreting observations against an
-explicit manufacturing context. Future responsibilities include minimum wall
-or ligament requirements, process clearance, overhang and support concerns,
-printer-envelope checks, material constraints, and structured warnings.
+explicit manufacturing context. It may consume `GeometrySnapshot`,
+`TopologyAnalysis`, `GeometricAnalysis`, and a versioned immutable
+`ManufacturingProfile`. Future responsibilities include minimum thickness or
+ligament requirements, process clearance, build-envelope checks, material
+constraints, and structured fabrication-risk warnings.
 
 It owns pass/fail or severity decisions. `GeometricAnalysis` must not contain
 printer limits, manufacturing tolerances, warning severity, or printability
 flags.
+
+The manufacturing contracts are:
+
+| Contract | Responsibility |
+|---|---|
+| `BuildEnvelope` | Physical X/Y/Z extent, total safety margin per axis, effective allowed extent per axis, and enabled state |
+| `ManufacturingConstraint` | One enabled scalar hard constraint or warning rule with comparison, limit, explicit unit, and failure severity |
+| `ManufacturingProfile` | Profile ID/version, settings revision, process identity, optional build envelope, ordered constraints, and notes |
+| `ConstraintEvaluation` | Explainable measured-versus-required result with status, severity, rationale, and upstream evidence IDs |
+| `ManufacturingWarning` | Non-fatal advisory or warning linked to evaluations and evidence IDs |
+| `ManufacturingAnalysis` | Profile provenance, ordered evaluations and warnings, plus a non-scored overall status |
+
+The physical machine envelope is distinct from the effective allowed part
+extent. `BuildEnvelope` retains both plus the configured total safety margin;
+it does not calculate or validate them. Current configured values remain owned
+by the centralized `Settings` system. A future composition layer will create a
+versioned immutable profile snapshot from settings and inject it into the
+manufacturing stage. Model modules never read global settings.
+
+Hard constraints and warnings are separate concepts:
+
+- A hard-constraint violation is a `ConstraintEvaluation` with status `fail`
+  and prevents compatibility with the evaluated profile.
+- A warning-rule violation is an evaluation with status `warning` and may
+  produce a non-fatal `ManufacturingWarning`.
+- Passing and unavailable evidence are represented explicitly by `pass` and
+  `not_evaluated`.
+- `ManufacturingAnalysis.overall_status` is reserved for deterministic
+  derivation from evaluations as `pass`, `warning`, or `fail`; its inactive
+  default is `not_evaluated`. It is not a score.
+
+Future thickness, ligament, and clearance evaluation will reference the
+upstream `ThicknessObservation`, `MaterialLigamentObservation`, and
+`ClearanceObservation` IDs. Each evaluation snapshots the measured value,
+configured required value, comparison, and unit for explainability without
+duplicating points, bounds, or FreeCAD geometry. Corners, curvature, flat
+regions, complexity indicators, holes, and cavities may support future
+process-specific evaluations only when an explicit profile constraint defines
+their manufacturing meaning.
 
 ### SeamAnalysis: reserved seam evidence
 
@@ -224,6 +266,11 @@ zones and their seam-specific rationale.
 It must not generate paths or rank candidates. Path creation belongs to
 `PathFinderEngine`; scoring belongs to scoring contracts and their future
 engine.
+
+Manufacturing status cannot select a seam or candidate path. Seam analysis may
+consume manufacturing results later, but seam suitability remains a separate
+interpretation. Scoring expresses ranking and preferences only after candidate
+generation; it must not be hidden inside manufacturing severity or status.
 
 ## 6. Geometric observation conventions
 
@@ -257,8 +304,9 @@ limits.
 
 - `Common`: points, directions, and bounding boxes.
 - `Geometry`: the source-wide geometry snapshot.
-- `Analysis`: staged report composition plus topology, manufacturing, and seam
-  records.
+- `Analysis`: staged report composition plus topology and seam records.
+- `Manufacturing`: build-envelope, profile, constraint, evaluation, warning,
+  and manufacturing-stage report contracts.
 - `Thickness`, `Clearance`, `Ligaments`, `Edges`, `Curvature`, `Symmetry`, and
   `Complexity`: focused geometric observation records.
 - `Paths`: unranked candidate path records.
@@ -273,6 +321,8 @@ Models contain no business logic and do not import FreeCAD.
 - Engines communicate through `Core.Models`.
 - Analysis components may consume upstream immutable models but never later
   stage results.
+- A future manufacturing component consumes immutable snapshot, topology,
+  geometry, and profile models directly; it does not import upstream engines.
 - Engine modules do not import other engine modules.
 - Commands and GUI contain no analysis or optimization algorithms.
 - Models never know FreeCAD documents or runtime objects.
