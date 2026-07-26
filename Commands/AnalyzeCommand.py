@@ -145,7 +145,8 @@ class PanelOptimizerAnalyzeCommand:
             )
 
 
-FreeCADGui.addCommand(
-    "PanelOptimizer_Analyze",
-    PanelOptimizerAnalyzeCommand()
-)
+if hasattr(FreeCADGui, "addCommand"):
+    FreeCADGui.addCommand(
+        "PanelOptimizer_Analyze",
+        PanelOptimizerAnalyzeCommand(),
+    )

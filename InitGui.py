@@ -11,6 +11,27 @@ import FreeCAD
 import FreeCADGui
 
 
+def _module_directory():
+    """Return this user-installed workbench directory without ``__file__``.
+
+    FreeCAD may execute ``InitGui.py`` as an initialization script rather than
+    import it as a normal Python module.  In that execution mode ``__file__``
+    is not guaranteed to exist.  The user application directory is a stable
+    FreeCAD API boundary and locates the current ``Mod/PanelOptimizer``
+    installation without embedding an operating-system user path.
+    """
+    return os.path.abspath(
+        os.path.join(
+            FreeCAD.getUserAppDataDir(),
+            "Mod",
+            "PanelOptimizer",
+        )
+    )
+
+
+MODULE_DIRECTORY = _module_directory()
+
+
 class PanelOptimizerWorkbench(Workbench):
     """
     PanelOptimizer FreeCAD Workbench
@@ -19,7 +40,7 @@ class PanelOptimizerWorkbench(Workbench):
     MenuText = "PanelOptimizer"
     ToolTip = "Optimize artistic panels for large format 3D printing"
     Icon = os.path.join(
-        os.path.dirname(__file__),
+        MODULE_DIRECTORY,
         "Gui",
         "Resources",
         "icons",
