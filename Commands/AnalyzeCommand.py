@@ -151,11 +151,7 @@ class PanelOptimizerAnalyzeCommand:
         except Exception as err:
 
             FreeCAD.Console.PrintWarning(
-                "\nPanelOptimizer analysis failed.\n"
-            )
-
-            FreeCAD.Console.PrintWarning(
-                str(err) + "\n"
+                "\nPanelOptimizer: " + str(err) + "\n"
             )
 
 

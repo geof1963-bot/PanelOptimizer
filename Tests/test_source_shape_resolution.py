@@ -24,10 +24,6 @@ from Core.SourceShapeResolver import (
     diagnose_source_shape,
     resolve_source_shape,
 )
-from Core.ShapeRepair import (
-    REPAIR_VOLUME_ABSOLUTE_TOLERANCE_MM3,
-    REPAIR_VOLUME_RELATIVE_TOLERANCE,
-)
 from Core.SplitterEngine import SplitterEngine
 from Core.SplitWorkflow import resolve_selected_shape
 
@@ -75,6 +71,55 @@ class _InvalidSolid:
     @staticmethod
     def isValid():
         return False
+
+
+class _RepairTrapSolid:
+    """Invalid solid proxy that records every forbidden repair operation."""
+
+    ShapeType = "Solid"
+
+    def __init__(self, shape):
+        self._shape = shape
+        self.Solids = (self,)
+        self.calls = {
+            "copy": 0,
+            "fix": 0,
+            "fixTolerance": 0,
+            "removeSplitter": 0,
+            "check": 0,
+        }
+
+    def isNull(self):
+        return False
+
+    def isValid(self):
+        return False
+
+    def isClosed(self):
+        return bool(self._shape.isClosed())
+
+    def copy(self):
+        self.calls["copy"] += 1
+        raise AssertionError("copy must not be called for automatic repair")
+
+    def fix(self, *args):
+        self.calls["fix"] += 1
+        raise AssertionError("fix must not be called")
+
+    def fixTolerance(self, *args):
+        self.calls["fixTolerance"] += 1
+        raise AssertionError("fixTolerance must not be called")
+
+    def removeSplitter(self):
+        self.calls["removeSplitter"] += 1
+        raise AssertionError("removeSplitter must not be called")
+
+    def check(self, *args):
+        self.calls["check"] += 1
+        raise AssertionError("check must not be called on invalid geometry")
+
+    def __getattr__(self, name):
+        return getattr(self._shape, name)
 
 
 @unittest.skipIf(Part is None, "FreeCAD Part module is unavailable")
@@ -158,109 +203,53 @@ class SourceShapeResolutionTests(unittest.TestCase):
     def test_invalid_contained_solid_is_rejected(self):
         wrapper = _Container((_InvalidSolid(),))
 
-        with self.assertRaisesRegex(InvalidShapeError, "could not be repaired"):
+        with self.assertRaisesRegex(
+            InvalidShapeError,
+            "Automatic repair is disabled for safety",
+        ):
             resolve_source_shape(wrapper)
 
-    def test_real_invalid_solid_is_repaired_on_a_transient_copy(self):
+    def test_invalid_solid_never_invokes_repair_or_detailed_check(self):
+        trapped = _RepairTrapSolid(self._invalid_inner_shell(0.02))
+
+        with self.assertRaisesRegex(
+            InvalidShapeError,
+            "Source solid is invalid",
+        ) as context:
+            resolve_source_shape(_Container((trapped,)))
+
+        self.assertEqual(
+            trapped.calls,
+            {
+                "copy": 0,
+                "fix": 0,
+                "fixTolerance": 0,
+                "removeSplitter": 0,
+                "check": 0,
+            },
+        )
+        message = str(context.exception)
+        self.assertIn("shape type=Solid", message)
+        self.assertIn("valid=False", message)
+        self.assertIn("closed=True", message)
+        self.assertIn("solid count=1", message)
+        self.assertIn("shell count=2", message)
+        self.assertIn("volume=", message)
+        self.assertIn("bounding box=", message)
+        self.assertIn("B-rep check=skipped_for_safety", message)
+
+    def test_real_invalid_solid_fails_without_source_change(self):
         invalid = self._invalid_inner_shell(0.02)
-        wrapper = _Container((invalid,))
-        before_brep = invalid.exportBrepToString()
-        before_volume = float(invalid.Volume)
-
-        resolution = resolve_source_shape(wrapper)
-
-        self.assertFalse(invalid.isValid())
-        self.assertEqual(invalid.exportBrepToString(), before_brep)
-        self.assertIsNot(resolution.shape, invalid)
-        self.assertTrue(resolution.shape.isValid())
-        self.assertTrue(resolution.shape.isClosed())
-        self.assertEqual(len(resolution.shape.Solids), 1)
-        self.assertGreater(resolution.shape.Volume, 0.0)
-        self.assertEqual(
-            resolution.source_resolution,
-            "repaired_contained_solid",
-        )
-        self.assertEqual(resolution.repair_strategy, "shape_fix")
-        self.assertTrue(resolution.repair_attempts[-1].accepted)
-        before_diagnostic = resolution.diagnostic.solids[0]
-        self.assertFalse(before_diagnostic.is_valid)
-        self.assertTrue(before_diagnostic.is_closed)
-        self.assertEqual(before_diagnostic.shell_count, 2)
-        self.assertEqual(before_diagnostic.check_status, "failed")
-        self.assertIsNotNone(before_diagnostic.problematic_subshape_count)
-        self.assertAlmostEqual(before_diagnostic.volume_mm3, before_volume)
-        self.assertIsNotNone(before_diagnostic.area_mm2)
-        self.assertIsNotNone(before_diagnostic.bounding_box_mm)
-        self.assertIsNotNone(before_diagnostic.center_of_mass_mm)
-        volume_tolerance = max(
-            REPAIR_VOLUME_ABSOLUTE_TOLERANCE_MM3,
-            abs(before_volume) * REPAIR_VOLUME_RELATIVE_TOLERANCE,
-        )
-        self.assertAlmostEqual(
-            resolution.shape.Volume,
-            before_volume,
-            delta=volume_tolerance,
-        )
-        self.assertEqual(
-            (
-                resolution.shape.BoundBox.XLength,
-                resolution.shape.BoundBox.YLength,
-                resolution.shape.BoundBox.ZLength,
-            ),
-            (100.0, 100.0, 8.0),
-        )
-
-    def test_repair_with_excessive_material_change_is_rejected(self):
-        invalid = self._invalid_inner_shell(0.1)
         before_brep = invalid.exportBrepToString()
 
         with self.assertRaisesRegex(
             InvalidShapeError,
-            "volume changed beyond geometry tolerance",
+            "Automatic repair is disabled for safety",
         ):
             resolve_source_shape(_Container((invalid,)))
 
         self.assertFalse(invalid.isValid())
         self.assertEqual(invalid.exportBrepToString(), before_brep)
-
-    def test_open_missing_face_solid_is_not_accepted_as_repaired(self):
-        box = Part.makeBox(10, 10, 5)
-        invalid = Part.makeSolid(
-            Part.makeShell(tuple(face.copy() for face in box.Faces[:-1]))
-        )
-        before_brep = invalid.exportBrepToString()
-
-        with self.assertRaisesRegex(InvalidShapeError, "could not be repaired"):
-            resolve_source_shape(_Container((invalid,)))
-
-        self.assertFalse(invalid.isValid())
-        self.assertEqual(invalid.exportBrepToString(), before_brep)
-
-    def test_repaired_transient_solid_runs_analyze_and_split(self):
-        invalid = self._invalid_inner_shell(0.02)
-        wrapper = _Container((invalid,))
-        before_brep = invalid.exportBrepToString()
-        resolution = resolve_source_shape(wrapper)
-        snapshot = GeometryEngine().create_snapshot(
-            resolution.shape,
-            "repaired-pipeline",
-            "Repaired pipeline",
-            validation_messages=resolution.messages,
-        )
-
-        report = AnalyzerEngine(
-            lambda source_id: resolution.shape
-        ).analyze(snapshot)
-        split = SplitterEngine().split_four_quadrants(
-            wrapper,
-            "repaired-pipeline",
-        )
-
-        self.assertEqual(len(split.shapes), 4)
-        self.assertTrue(all(shape.isValid() for shape in split.shapes))
-        self.assertEqual(report.geometry.validation_messages, resolution.messages)
-        self.assertEqual(invalid.exportBrepToString(), before_brep)
-        self._assert_model_has_no_freecad_values(report)
 
     def test_analyze_and_split_resolve_the_identical_solid(self):
         solid = Part.makeBox(20, 20, 5)
@@ -324,18 +313,18 @@ class SourceShapeResolutionTests(unittest.TestCase):
         self.assertFalse(diagnostic.is_null)
         self.assertFalse(diagnostic.is_valid)
         self.assertFalse(diagnostic.is_closed)
-        self.assertEqual(diagnostic.check_status, "failed")
-        self.assertIn("Invalid top-level container", diagnostic.check_message)
+        self.assertEqual(diagnostic.check_status, "skipped_for_safety")
+        self.assertIn("disabled", diagnostic.check_message)
         self.assertEqual(diagnostic.solids[0].shape_type, "Solid")
         self.assertFalse(diagnostic.solids[0].is_null)
         self.assertTrue(diagnostic.solids[0].is_valid)
         self.assertTrue(diagnostic.solids[0].is_closed)
         self.assertEqual(diagnostic.solids[0].shell_count, 1)
-        self.assertEqual(diagnostic.solids[0].problematic_subshape_count, 0)
+        self.assertIsNone(diagnostic.solids[0].problematic_subshape_count)
         self.assertAlmostEqual(diagnostic.solids[0].volume_mm3, solid.Volume)
-        self.assertAlmostEqual(diagnostic.solids[0].area_mm2, solid.Area)
+        self.assertIsNone(diagnostic.solids[0].area_mm2)
         self.assertIsNotNone(diagnostic.solids[0].bounding_box_mm)
-        self.assertIsNotNone(diagnostic.solids[0].center_of_mass_mm)
+        self.assertIsNone(diagnostic.solids[0].center_of_mass_mm)
 
     def test_analyze_command_reports_contained_solid_extraction(self):
         import Commands.AnalyzeCommand as analyze_module
@@ -375,7 +364,7 @@ class SourceShapeResolutionTests(unittest.TestCase):
             messages,
         )
 
-    def test_analyze_command_reports_transient_repair_provenance(self):
+    def test_analyze_command_fails_cleanly_without_automatic_repair(self):
         import Commands.AnalyzeCommand as analyze_module
 
         invalid = self._invalid_inner_shell(0.02)
@@ -406,18 +395,16 @@ class SourceShapeResolutionTests(unittest.TestCase):
         ):
             analyze_module.PanelOptimizerAnalyzeCommand().Activated()
 
-        self.assertEqual(warnings, [])
-        self.assertIn("PanelOptimizer: Selected solid is invalid.\n", messages)
+        self.assertEqual(messages[-1], "\n")
         self.assertTrue(
-            any("Transient B-rep repair succeeded" in item for item in messages)
+            any("PanelOptimizer: Source solid is invalid." in item for item in warnings)
         )
-        self.assertIn(
-            "PanelOptimizer: Original source remains unchanged.\n",
-            messages,
+        self.assertTrue(
+            any("Automatic repair is disabled for safety." in item for item in warnings)
         )
         self.assertEqual(invalid.exportBrepToString(), before_brep)
 
-    def test_split_command_repairs_transiently_without_touching_source_object(self):
+    def test_split_command_fails_cleanly_without_touching_source_object(self):
         import Commands.SplitPanelCommand as split_module
 
         document_name = "PanelOptimizerTransientRepairSplit"
@@ -477,11 +464,14 @@ class SourceShapeResolutionTests(unittest.TestCase):
             ):
                 split_module.PanelOptimizerSplitPanelCommand().Activated()
 
-            self.assertEqual(errors, [])
             self.assertTrue(
-                any("Transient B-rep repair succeeded" in item for item in messages)
+                any("Source solid is invalid" in item for item in errors)
             )
-            self.assertTrue(any("STL export cancelled" in item for item in warnings))
+            self.assertTrue(
+                any("Automatic repair is disabled for safety" in item for item in errors)
+            )
+            self.assertEqual(messages, [])
+            self.assertEqual(warnings, [])
             after_shape = source.Shape
             after_geometry = (
                 after_shape.isNull(),
@@ -509,14 +499,7 @@ class SourceShapeResolutionTests(unittest.TestCase):
             self.assertFalse(after_shape.isValid())
             self.assertEqual(source.Label, before_label)
             self.assertEqual(tuple(source.PropertiesList), before_properties)
-            self.assertIsNotNone(document.getObject("PanelOptimizer_Result"))
-            self.assertEqual(
-                tuple(
-                    item.Name
-                    for item in document.getObject("PanelOptimizer_Result").Group
-                ),
-                ("Part_1", "Part_2", "Part_3", "Part_4"),
-            )
+            self.assertIsNone(document.getObject("PanelOptimizer_Result"))
         finally:
             FreeCAD.closeDocument(document_name)
 

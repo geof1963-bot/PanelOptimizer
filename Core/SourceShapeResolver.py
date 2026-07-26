@@ -7,7 +7,6 @@ import math
 from dataclasses import dataclass
 
 from .Exceptions import InvalidShapeError, NullShapeError
-from .ShapeRepair import RepairAttempt, attempt_transient_repair
 
 __all__ = [
     "ResolvedSourceShape",
@@ -41,11 +40,9 @@ class SolidDiagnostic:
 class ShapeDiagnostic:
     """FreeCAD-independent facts read from one source B-rep container.
 
-    ``check_status`` is ``completed`` when the available read-only ``check()``
-    call returns, ``failed`` when it raises, and ``unavailable`` when the shape
-    exposes no such call. Completion is not treated as validity. The optional
-    message is exception text only; no FreeCAD or OpenCASCADE object is
-    retained.
+    Detailed OpenCASCADE ``check()`` calls are deliberately skipped because
+    malformed native geometry can crash the FreeCAD process. ``check_status``
+    therefore records ``skipped_for_safety`` without calling that API.
     """
 
     shape_type: str
@@ -64,30 +61,27 @@ class ShapeDiagnostic:
 class ResolvedSourceShape:
     """Runtime source resolution; deliberately outside immutable Core.Models.
 
-    ``shape`` is either caller-owned valid geometry used read-only or a repaired
-    transient copy. ``diagnostic`` and ``messages`` contain only immutable
-    descriptive values.
+    ``shape`` is caller-owned valid geometry used read-only downstream.
+    ``diagnostic`` and ``messages`` contain only immutable descriptive values.
     """
 
     shape: object
     diagnostic: ShapeDiagnostic
     used_contained_solid: bool
     source_resolution: str
-    repair_strategy: str = ""
-    repair_attempts: tuple[RepairAttempt, ...] = ()
     messages: tuple[str, ...] = ()
 
 
 def diagnose_source_shape(
     shape: object,
     *,
-    run_shape_check: bool = True,
+    run_shape_check: bool = False,
 ) -> ShapeDiagnostic:
     """Describe source/container validity without modifying its geometry.
 
-    The optional OpenCASCADE-backed ``shape.check()`` call is diagnostic only.
-    It is never used to heal, rebuild, copy, or accept geometry, and its return
-    value is not interpreted as a replacement for ``isValid()``.
+    ``run_shape_check`` is retained for call compatibility but intentionally
+    ignored. Detailed OpenCASCADE checks and per-subshape validity scans are
+    unsafe on malformed B-reps and are never invoked here.
     """
     if shape is None:
         raise NullShapeError("Selected shape is missing.")
@@ -99,20 +93,12 @@ def diagnose_source_shape(
     shells = _topology_items(shape, "Shells")
     compsolids = _topology_items(shape, "CompSolids")
     solid_diagnostics = tuple(
-        _solid_diagnostic(solid, index, run_shape_check)
+        _solid_diagnostic(solid, index)
         for index, solid in enumerate(solids, start=1)
     )
 
-    check_status = "unavailable"
-    check_message = ""
-    check_method = getattr(shape, "check", None)
-    if run_shape_check and callable(check_method):
-        try:
-            check_method()
-            check_status = "completed"
-        except Exception as error:
-            check_status = "failed"
-            check_message = str(error)
+    check_status = "skipped_for_safety"
+    check_message = "Detailed B-rep check disabled for invalid-shape safety."
 
     return ShapeDiagnostic(
         shape_type=str(getattr(shape, "ShapeType", "Unknown")),
@@ -129,12 +115,12 @@ def diagnose_source_shape(
 
 
 def resolve_source_shape(shape: object) -> ResolvedSourceShape:
-    """Return exactly one valid or safely repaired source solid.
+    """Return exactly one valid source solid without attempting repair.
 
     A valid top-level ``Solid`` is accepted directly. Any other top-level
     container is accepted only when it exposes exactly one contained solid.
-    An invalid sole solid receives conservative repair attempts on transient
-    deep copies. Invalid, absent, or multiple results are rejected explicitly.
+    Invalid solids are rejected with crash-safe scalar diagnostics. Automatic
+    repair is disabled and no geometry-producing operation is called.
     """
     diagnostic = diagnose_source_shape(shape, run_shape_check=False)
     if diagnostic.is_null is None:
@@ -150,12 +136,7 @@ def resolve_source_shape(shape: object) -> ResolvedSourceShape:
                 used_contained_solid=False,
                 source_resolution="direct",
             )
-        return _repair_or_reject(
-            source_shape=shape,
-            invalid_solid=shape,
-            used_contained_solid=False,
-            source_resolution="repaired_source_solid",
-        )
+        raise _invalid_solid_error(diagnostic, shape)
 
     solids = _topology_items(shape, "Solids")
     if not solids:
@@ -174,12 +155,7 @@ def resolve_source_shape(shape: object) -> ResolvedSourceShape:
     if contained.is_null is not False:
         raise InvalidShapeError("Selected shape contains a null solid.")
     if contained.is_valid is not True:
-        return _repair_or_reject(
-            source_shape=shape,
-            invalid_solid=solids[0],
-            used_contained_solid=True,
-            source_resolution="repaired_contained_solid",
-        )
+        raise _invalid_solid_error(diagnostic, solids[0])
 
     messages = (
         (
@@ -197,42 +173,29 @@ def resolve_source_shape(shape: object) -> ResolvedSourceShape:
     )
 
 
-def _repair_or_reject(
-    source_shape: object,
+def _invalid_solid_error(
+    diagnostic: ShapeDiagnostic,
     invalid_solid: object,
-    used_contained_solid: bool,
-    source_resolution: str,
-) -> ResolvedSourceShape:
-    """Repair one invalid solid transiently or raise a diagnostic failure."""
-    diagnostic = diagnose_source_shape(source_shape, run_shape_check=True)
+) -> InvalidShapeError:
+    """Build one concise crash-safe invalid-source exception."""
     solid_diagnostic = (
         diagnostic.solids[0]
         if diagnostic.solids
-        else _solid_diagnostic(invalid_solid, 1, True)
+        else _solid_diagnostic(invalid_solid, 1)
     )
-    outcome = attempt_transient_repair(invalid_solid)
-    if outcome.shape is None:
-        result = outcome.attempts[-1].result if outcome.attempts else "not run"
-        raise InvalidShapeError(
-            "Selected solid is invalid and could not be repaired safely "
-            f"(contained solids={diagnostic.solid_count}, "
-            f"valid={solid_diagnostic.is_valid}, "
-            f"closed={solid_diagnostic.is_closed}, repair attempted=yes, "
-            f"result={result})."
-        )
-    return ResolvedSourceShape(
-        shape=outcome.shape,
-        diagnostic=diagnostic,
-        used_contained_solid=used_contained_solid,
-        source_resolution=source_resolution,
-        repair_strategy=outcome.strategy,
-        repair_attempts=outcome.attempts,
-        messages=(
-            "Selected solid is invalid.",
-            "Transient B-rep repair succeeded "
-            f"(strategy: {outcome.strategy}).",
-            "Original source remains unchanged.",
-        ),
+    bounds = _format_bounds(solid_diagnostic.bounding_box_mm)
+    volume = _format_scalar(solid_diagnostic.volume_mm3)
+    return InvalidShapeError(
+        "Source solid is invalid.\n"
+        "Automatic repair is disabled for safety.\n"
+        "Diagnostics: "
+        f"shape type={solid_diagnostic.shape_type}; "
+        f"valid={solid_diagnostic.is_valid}; "
+        f"closed={solid_diagnostic.is_closed}; "
+        f"solid count={diagnostic.solid_count}; "
+        f"shell count={solid_diagnostic.shell_count}; "
+        f"volume={volume} mm^3; bounding box={bounds}; "
+        f"B-rep check={solid_diagnostic.check_status}."
     )
 
 
@@ -250,10 +213,8 @@ def _optional_boolean(value: object, name: str) -> bool | None:
 def _solid_diagnostic(
     solid: object,
     index: int,
-    run_shape_check: bool,
 ) -> SolidDiagnostic:
-    """Collect immutable pre-repair facts for one contained solid."""
-    check_status, check_message = _shape_check(solid, run_shape_check)
+    """Collect conservative scalar facts without detailed native checks."""
     return SolidDiagnostic(
         index=index,
         shape_type=str(getattr(solid, "ShapeType", "Unknown")),
@@ -261,44 +222,28 @@ def _solid_diagnostic(
         is_valid=_optional_boolean(solid, "isValid"),
         is_closed=_optional_boolean(solid, "isClosed"),
         shell_count=len(_topology_items(solid, "Shells")),
-        check_status=check_status,
-        check_message=check_message,
-        problematic_subshape_count=(
-            _problematic_subshape_count(solid) if run_shape_check else None
-        ),
+        check_status="skipped_for_safety",
+        check_message="Detailed B-rep check disabled for invalid-shape safety.",
+        problematic_subshape_count=None,
         volume_mm3=_optional_float(solid, "Volume"),
-        area_mm2=_optional_float(solid, "Area"),
+        area_mm2=None,
         bounding_box_mm=_optional_bounds(solid),
-        center_of_mass_mm=_optional_point(solid, "CenterOfMass"),
+        center_of_mass_mm=None,
     )
 
 
-def _shape_check(shape: object, enabled: bool) -> tuple[str, str]:
-    """Run the optional detailed B-rep check and retain scalar output only."""
-    method = getattr(shape, "check", None)
-    if not enabled or not callable(method):
-        return "unavailable", ""
-    try:
-        method(True)
-        return "completed", ""
-    except TypeError:
-        try:
-            method()
-            return "completed", ""
-        except Exception as error:
-            return "failed", str(error)
-    except Exception as error:
-        return "failed", str(error)
+def _format_scalar(value: float | None) -> str:
+    """Format an optional diagnostic scalar deterministically."""
+    return "unavailable" if value is None else format(value, ".12g")
 
 
-def _problematic_subshape_count(shape: object) -> int:
-    """Count exposed invalid subshapes; overlapping levels count separately."""
-    count = 0
-    for name in ("Shells", "Faces", "Wires", "Edges", "Vertexes"):
-        for item in _topology_items(shape, name):
-            if _optional_boolean(item, "isValid") is not True:
-                count += 1
-    return count
+def _format_bounds(
+    values: tuple[float, float, float, float, float, float] | None,
+) -> str:
+    """Format optional bounds without evaluating additional geometry."""
+    if values is None:
+        return "unavailable"
+    return "(" + ", ".join(format(value, ".12g") for value in values) + ") mm"
 
 
 def _optional_float(value: object, name: str) -> float | None:
@@ -327,19 +272,6 @@ def _optional_bounds(
                 bounds.ZMax,
             )
         )
-        return values if all(math.isfinite(value) for value in values) else None
-    except (AttributeError, TypeError, ValueError):
-        return None
-
-
-def _optional_point(
-    shape: object,
-    name: str,
-) -> tuple[float, float, float] | None:
-    """Read one finite point-like measurement when available."""
-    try:
-        point = getattr(shape, name)
-        values = float(point.x), float(point.y), float(point.z)
         return values if all(math.isfinite(value) for value in values) else None
     except (AttributeError, TypeError, ValueError):
         return None
