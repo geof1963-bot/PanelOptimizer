@@ -7,6 +7,10 @@ import math
 from dataclasses import dataclass
 
 from .Exceptions import InvalidShapeError, NullShapeError
+from .TargetedPlanarReconstruction import (
+    TargetedReconstructionProvenance,
+    attempt_targeted_planar_reconstruction,
+)
 
 __all__ = [
     "ResolvedSourceShape",
@@ -61,7 +65,8 @@ class ShapeDiagnostic:
 class ResolvedSourceShape:
     """Runtime source resolution; deliberately outside immutable Core.Models.
 
-    ``shape`` is caller-owned valid geometry used read-only downstream.
+    ``shape`` is either caller-owned valid geometry used read-only downstream
+    or a strictly validated transient reconstruction.
     ``diagnostic`` and ``messages`` contain only immutable descriptive values.
     """
 
@@ -70,6 +75,7 @@ class ResolvedSourceShape:
     used_contained_solid: bool
     source_resolution: str
     messages: tuple[str, ...] = ()
+    reconstruction_provenance: TargetedReconstructionProvenance | None = None
 
 
 def diagnose_source_shape(
@@ -115,12 +121,13 @@ def diagnose_source_shape(
 
 
 def resolve_source_shape(shape: object) -> ResolvedSourceShape:
-    """Return exactly one valid source solid without attempting repair.
+    """Return exactly one valid source solid under the narrow V4 policy.
 
     A valid top-level ``Solid`` is accepted directly. Any other top-level
     container is accepted only when it exposes exactly one contained solid.
-    Invalid solids are rejected with crash-safe scalar diagnostics. Automatic
-    repair is disabled and no geometry-producing operation is called.
+    An invalid solid is reconstructed only when every face-level eligibility
+    rule for the proven planar-boundary defect family passes. Every other
+    invalid solid is rejected; no generic or fallback repair is attempted.
     """
     diagnostic = diagnose_source_shape(shape, run_shape_check=False)
     if diagnostic.is_null is None:
@@ -136,7 +143,11 @@ def resolve_source_shape(shape: object) -> ResolvedSourceShape:
                 used_contained_solid=False,
                 source_resolution="direct",
             )
-        raise _invalid_solid_error(diagnostic, shape)
+        return _resolve_invalid_solid(
+            diagnostic,
+            shape,
+            used_contained_solid=False,
+        )
 
     solids = _topology_items(shape, "Solids")
     if not solids:
@@ -155,7 +166,11 @@ def resolve_source_shape(shape: object) -> ResolvedSourceShape:
     if contained.is_null is not False:
         raise InvalidShapeError("Selected shape contains a null solid.")
     if contained.is_valid is not True:
-        raise _invalid_solid_error(diagnostic, solids[0])
+        return _resolve_invalid_solid(
+            diagnostic,
+            solids[0],
+            used_contained_solid=True,
+        )
 
     messages = (
         (
@@ -170,6 +185,59 @@ def resolve_source_shape(shape: object) -> ResolvedSourceShape:
         used_contained_solid=True,
         source_resolution="contained_solid",
         messages=messages,
+    )
+
+
+def _resolve_invalid_solid(
+    diagnostic: ShapeDiagnostic,
+    invalid_solid: object,
+    *,
+    used_contained_solid: bool,
+) -> ResolvedSourceShape:
+    """Attempt only the proven planar-boundary transient reconstruction."""
+    outcome = attempt_targeted_planar_reconstruction(invalid_solid)
+    if outcome.succeeded:
+        provenance = outcome.provenance
+        if provenance is None:
+            raise InvalidShapeError("Targeted reconstruction lacks provenance.")
+        messages = (
+            "Source solid is invalid.",
+            "Detected supported planar-boundary defect on "
+            f"{provenance.rebuilt_face_count} faces.",
+            "Targeted transient reconstruction succeeded.",
+            "Original source remains unchanged.",
+        )
+        return ResolvedSourceShape(
+            shape=outcome.shape,
+            diagnostic=diagnostic,
+            used_contained_solid=used_contained_solid,
+            source_resolution="targeted_planar_reconstruction",
+            messages=messages,
+            reconstruction_provenance=provenance,
+        )
+    if outcome.status == "failed":
+        raise _targeted_reconstruction_error(
+            diagnostic,
+            invalid_solid,
+            outcome.reason,
+        )
+    raise _invalid_solid_error(diagnostic, invalid_solid)
+
+
+def _targeted_reconstruction_error(
+    diagnostic: ShapeDiagnostic,
+    invalid_solid: object,
+    reason: str,
+) -> InvalidShapeError:
+    """Build one failure message without invoking a fallback repair."""
+    base = str(_invalid_solid_error(diagnostic, invalid_solid))
+    diagnostics = base.partition("Diagnostics: ")[2]
+    return InvalidShapeError(
+        "Source solid is invalid.\n"
+        "Targeted reconstruction failed.\n"
+        "Source remains unchanged.\n"
+        f"Reason: {reason}.\n"
+        f"Diagnostics: {diagnostics}"
     )
 
 
