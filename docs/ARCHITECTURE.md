@@ -157,10 +157,15 @@ remains at its exact model-defined default.
 
 `SplitterEngine.split_four_quadrants` validates that the source contains
 exactly one valid non-empty solid. It calculates X/Y cuts at the source
-axis-aligned bounding-box center and intersects the source B-rep with four
-exact full-Z quadrant prisms. It never meshes, fills, simplifies, or modifies
-the caller's source. Existing holes and other boundary geometry are therefore
-preserved by OpenCASCADE boolean intersection.
+axis-aligned bounding-box center and runs one
+OpenCASCADE `generalFuse` operation with two bounded planar faces spanning and
+extending beyond the full source bounds. This avoids coincident cutting-face
+edges at a complex source boundary while retaining the exact center planes.
+Since the zero-volume tools contribute no solids, all
+resulting solids are source material; avoiding SplitAPI history filtering is
+important for complex sources whose valid pieces may lack mapped history. It never meshes,
+heals, refines, fills, simplifies, or modifies the caller's source. Existing
+holes and other boundary geometry are preserved by the coherent partition.
 
 Quadrant order is deterministic in model coordinates:
 
@@ -169,9 +174,12 @@ Quadrant order is deterministic in model coordinates:
 3. `Part_3`: upper-left
 4. `Part_4`: upper-right
 
-Every result must be one non-empty valid solid. Pairwise common volume must be
-within the centralized geometry-only kernel tolerance, and the sum of result
-volumes must equal source volume within
+Partition solids are deterministically sorted and classified by their exact
+bounding half-spaces, never merely by center of mass. A fragment that still
+crosses a cut is rejected. More than one fragment in a quadrant is reported as
+disconnected source material and is not silently fused. Every final result
+must be one non-empty valid closed solid. Distinct quadrant half-spaces cannot
+overlap in their interiors, and the sum of result volumes must equal source volume within
 `max(1e-6 mm3, source_volume * 1e-9)`. These values validate B-rep operations;
 they are not manufacturing allowances.
 
@@ -199,6 +207,25 @@ content, and only then atomically finalizes `Part_1.stl` through `Part_4.stl`.
 Known partial files are removed on failure, and pre-existing final files are
 restored if finalization fails. The command always asks the user for an
 existing output directory; it never chooses a hidden temporary destination.
+
+### V4.10 pragmatic macro split path
+
+`MacroSplitCore` is a deliberately direct runtime-geometry component extracted
+from the proven `Chanfreins_Center profond.FCMacro` and
+`chanfreins_avec_Offsets.FCMacro`. It copies the selected shape without asking
+AnalyzerEngine or SourceShapeResolver to validate it, constructs the exact
+asymmetric front-face groove profile (`1.2 mm` depth, `2.2 mm` top opening,
+`0.5 mm` flat bottom, `20 mm` traversal overlap), and performs vertical then
+horizontal `cut()` operations followed by best-effort `removeSplitter()`.
+
+The real bounding-box center is kept separate from the effective cut location:
+positive vertical offset moves cut X right and positive horizontal offset moves
+cut Y up. `MacroSplitCore` returns one transient runtime shape plus scalar
+metadata; it does not create four parts, validate printability, export files,
+or place runtime geometry in `Core.Models`. The current Split command invokes
+this path with zero offsets and creates one `FINAL_PANEL_BEVELED` result object.
+The V4.00 `SplitterEngine`, document writer, and export engine remain available
+but are not prerequisites for this pragmatic command path.
 
 ## 5. Analysis responsibility boundaries
 

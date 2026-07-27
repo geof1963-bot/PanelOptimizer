@@ -72,6 +72,16 @@ class SplitExportPrototypeTests(unittest.TestCase):
         self.assertEqual(execution.result.cut_x_mm, 297.0)
         self.assertEqual(execution.result.cut_y_mm, 297.0)
         self.assertTrue(execution.result.all_parts_printable)
+        self.assertEqual(
+            execution.partition_method,
+            "Part.TopoShape.generalFuse(two planar tools)",
+        )
+        self.assertEqual(execution.initial_partition_solid_count, 4)
+        self.assertEqual(execution.solids_per_quadrant, (1, 1, 1, 1))
+        self.assertEqual(
+            execution.result.strategy,
+            "bounding_box_center_quadrants",
+        )
         for part, shape in zip(execution.result.parts, execution.shapes):
             self.assertEqual(shape.ShapeType, "Solid")
             self.assertEqual(len(shape.Solids), 1)
@@ -197,6 +207,58 @@ class SplitExportPrototypeTests(unittest.TestCase):
                 for shape in execution.shapes
             )
         )
+
+    def test_complex_perforated_brep_uses_one_coherent_partition(self):
+        """Many cut features are partitioned by one two-plane slice call."""
+        source = Part.makeBox(180, 140, 8, Vector(-30, 15, 2))
+        holes = tuple(
+            Part.makeCylinder(
+                3.0 + (index % 3),
+                8,
+                Vector(-15 + (index % 6) * 28, 28 + (index // 6) * 32, 2),
+            )
+            for index in range(18)
+        )
+        cutting_tool = holes[0]
+        for hole in holes[1:]:
+            cutting_tool = cutting_tool.fuse(hole)
+        source = source.cut(cutting_tool)
+        before = source.exportBrepToString()
+
+        real_partition = SplitterEngine._partition_source
+        with patch.object(
+            SplitterEngine,
+            "_partition_source",
+            wraps=real_partition,
+        ) as partition_call:
+            execution = self._split(source, "complex-partition")
+
+        self.assertEqual(partition_call.call_count, 1)
+        self.assertEqual(execution.initial_partition_solid_count, 4)
+        self.assertEqual(execution.solids_per_quadrant, (1, 1, 1, 1))
+        self.assertTrue(all(shape.isValid() for shape in execution.shapes))
+        self.assertTrue(all(shape.isClosed() for shape in execution.shapes))
+        self.assertAlmostEqual(
+            sum(shape.Volume for shape in execution.shapes),
+            source.Volume,
+            delta=volume_tolerance_mm3(source.Volume),
+        )
+        self.assertEqual(source.exportBrepToString(), before)
+
+    def test_split_command_has_no_analyzer_prerequisite(self):
+        """The basic split command remains independent of deep analysis."""
+        command_source = (
+            Path(__file__).resolve().parents[1]
+            / "Commands"
+            / "SplitPanelCommand.py"
+        ).read_text(encoding="utf-8")
+        splitter_source = (
+            Path(__file__).resolve().parents[1]
+            / "Core"
+            / "SplitterEngine.py"
+        ).read_text(encoding="utf-8")
+        self.assertNotIn("AnalyzerEngine", command_source)
+        self.assertNotIn("AnalyzerEngine", splitter_source)
 
     def test_source_under_effective_limits_is_still_split(self):
         """Prototype semantics always create four parts for a valid source."""
@@ -709,7 +771,7 @@ class SplitExportPrototypeTests(unittest.TestCase):
         from Commands.SplitPanelCommand import PanelOptimizerSplitPanelCommand
 
         resources = PanelOptimizerSplitPanelCommand().GetResources()
-        self.assertEqual(resources["MenuText"], "Split and Export Panel")
+        self.assertEqual(resources["MenuText"], "Macro Split Panel")
 
 
 if __name__ == "__main__":

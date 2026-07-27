@@ -404,7 +404,7 @@ class SourceShapeResolutionTests(unittest.TestCase):
         )
         self.assertEqual(invalid.exportBrepToString(), before_brep)
 
-    def test_split_command_fails_cleanly_without_touching_source_object(self):
+    def test_macro_split_command_bypasses_deep_validation_without_source_mutation(self):
         import Commands.SplitPanelCommand as split_module
 
         document_name = "PanelOptimizerTransientRepairSplit"
@@ -457,21 +457,15 @@ class SourceShapeResolutionTests(unittest.TestCase):
                 split_module,
                 "FreeCADGui",
                 freecad_gui_stub,
-            ), patch.object(
-                split_module.PanelOptimizerSplitPanelCommand,
-                "_select_output_directory",
-                return_value="",
             ):
                 split_module.PanelOptimizerSplitPanelCommand().Activated()
 
+            self.assertEqual(errors, [])
             self.assertTrue(
-                any("Source solid is invalid" in item for item in errors)
+                any("Macro-based cut completed" in item for item in messages)
             )
-            self.assertTrue(
-                any("Automatic repair is disabled for safety" in item for item in errors)
-            )
-            self.assertEqual(messages, [])
             self.assertEqual(warnings, [])
+            self.assertIsNotNone(document.getObject("FINAL_PANEL_BEVELED"))
             after_shape = source.Shape
             after_geometry = (
                 after_shape.isNull(),

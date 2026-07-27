@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""FreeCAD GUI command for the deterministic V4.00 split/export prototype."""
+"""FreeCAD GUI command for the pragmatic V4.10 macro-equivalent cut."""
 
 from __future__ import annotations
 
@@ -9,17 +9,23 @@ import FreeCAD
 import FreeCADGui
 
 from Core.Exceptions import PanelOptimizerError
-from Core.ExportEngine import ExportEngine
-from Core.SplitterEngine import SplitterEngine
-from Core.SplitWorkflow import (
-    SplitDocumentWriter,
-    resolve_selected_shape,
-    validate_single_selection,
-)
+from Core.MacroSplitCore import MacroGrooveParameters, MacroSplitCore
+from Core.SplitWorkflow import validate_single_selection
 
 
 class PanelOptimizerSplitPanelCommand:
-    """Split one selected solid into four quadrants and export four STLs."""
+    """Create one macro-equivalent crossed-groove result object."""
+
+    def __init__(
+        self,
+        vertical_offset: float = 0.0,
+        horizontal_offset: float = 0.0,
+        parameters: MacroGrooveParameters = MacroGrooveParameters(),
+    ) -> None:
+        """Store explicit macro inputs; registered command defaults to center."""
+        self._vertical_offset = vertical_offset
+        self._horizontal_offset = horizontal_offset
+        self._parameters = parameters
 
     def GetResources(self):
         """Return command label, tooltip, and optional icon path."""
@@ -32,8 +38,8 @@ class PanelOptimizerSplitPanelCommand:
         )
         return {
             "Pixmap": icon_path,
-            "MenuText": "Split and Export Panel",
-            "ToolTip": "Split the selected panel into four solids and export STL",
+            "MenuText": "Macro Split Panel",
+            "ToolTip": "Apply the proven centered macro groove geometry",
         }
 
     def IsActive(self):
@@ -41,7 +47,7 @@ class PanelOptimizerSplitPanelCommand:
         return FreeCAD.ActiveDocument is not None
 
     def Activated(self):
-        """Execute selection, split, document output, validation, and export."""
+        """Apply the centered V4.10 macro cut without deep analysis."""
         document = FreeCAD.ActiveDocument
         if document is None:
             self._error("PanelOptimizer: no active document.")
@@ -51,66 +57,39 @@ class PanelOptimizerSplitPanelCommand:
             source_object = validate_single_selection(
                 FreeCADGui.Selection.getSelection()
             )
-            source_id = str(source_object.Name)
-            resolution = resolve_selected_shape(source_object)
-            for message in resolution.messages:
-                FreeCAD.Console.PrintMessage(
-                    f"PanelOptimizer: {message}\n"
-                )
-            execution = SplitterEngine().split_four_quadrants(
-                resolution.shape,
-                source_id,
+            result = MacroSplitCore().cut(
+                source_object.Shape,
+                self._vertical_offset,
+                self._horizontal_offset,
+                self._parameters,
             )
-            output_objects = SplitDocumentWriter().write(document, execution)
-
-            if not execution.result.all_parts_printable:
-                details = "\n".join(execution.result.validation_messages)
-                self._error(
-                    "PanelOptimizer created four inspection parts, but STL "
-                    "export was blocked by effective printable limits:\n"
-                    + details
-                )
-                return
-
-            output_directory = self._select_output_directory()
-            if not output_directory:
-                FreeCAD.Console.PrintWarning(
-                    "PanelOptimizer: STL export cancelled; four result solids "
-                    "remain in PanelOptimizer_Result.\n"
-                )
-                return
-
-            report = ExportEngine(execution.resolve_shape).export_parts(
-                execution.result.parts,
-                output_directory,
-                "STL",
+            output_object = document.addObject(
+                "Part::Feature",
+                "FINAL_PANEL_BEVELED",
             )
+            output_object.Shape = result.shape
+            document.recompute()
+            bounds = source_object.Shape.BoundBox
             FreeCAD.Console.PrintMessage(
-                "PanelOptimizer: split complete. Created "
-                f"{len(output_objects)} solids and exported "
-                f"{len(report.artifacts)} STL files to "
-                f"{report.output_directory}.\n"
+                "PanelOptimizer V4.10 - Macro Split\n"
+                f"Source: {source_object.Name}\n"
+                f"Panel: {bounds.XLength:g} x {bounds.YLength:g} x "
+                f"{bounds.ZLength:g} mm\n"
+                f"Real center X/Y: {result.real_center_x_mm:g}, "
+                f"{result.real_center_y_mm:g}\n"
+                f"Vertical cut X: {result.cut_x_mm:g}\n"
+                f"Horizontal cut Y: {result.cut_y_mm:g}\n"
+                f"Offsets: X={result.vertical_offset_mm:g}, "
+                f"Y={result.horizontal_offset_mm:g}\n"
+                "Macro-based cut completed.\n"
             )
         except PanelOptimizerError as error:
             self._error(f"PanelOptimizer: {error}")
         except Exception as error:
             self._error(
-                "PanelOptimizer: unexpected split/export failure: "
+                "PanelOptimizer: unexpected macro split failure: "
                 f"{error}"
             )
-
-    @staticmethod
-    def _select_output_directory() -> str:
-        """Ask the user for an explicit existing STL destination directory."""
-        from PySide import QtGui
-
-        selected = QtGui.QFileDialog.getExistingDirectory(
-            None,
-            "Select PanelOptimizer STL output directory",
-            "",
-            QtGui.QFileDialog.ShowDirsOnly,
-        )
-        return str(selected)
 
     @staticmethod
     def _error(message: str) -> None:

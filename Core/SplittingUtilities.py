@@ -12,6 +12,12 @@ from .Exceptions import SplitOperationError
 # they are unrelated to printer limits or manufacturing acceptance.
 KERNEL_VOLUME_ABSOLUTE_TOLERANCE_MM3 = 1.0e-6
 KERNEL_VOLUME_RELATIVE_TOLERANCE = 1.0e-9
+# Coordinate tolerance used only to classify exact partition pieces against
+# the two cutting planes. It is not a manufacturing or printable limit.
+PARTITION_CLASSIFICATION_TOLERANCE_MM = 1.0e-7
+# Minimum OpenCASCADE fuzzy intersection tolerance. SplitterEngine raises this
+# to the source B-rep's own maximum stored tolerance when that is larger.
+PARTITION_FUZZY_TOLERANCE_MM = 1.0e-7
 
 
 def finite_positive(value: object, label: str) -> float:

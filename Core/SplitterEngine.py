@@ -16,6 +16,8 @@ from .Models import BoundingBox, Point3D, PrintablePart, SplitResult
 from .Settings import Settings
 from .SourceShapeResolver import resolve_source_shape
 from .SplittingUtilities import (
+    PARTITION_CLASSIFICATION_TOLERANCE_MM,
+    PARTITION_FUZZY_TOLERANCE_MM,
     finite_positive,
     format_mm,
     volume_tolerance_mm3,
@@ -34,6 +36,9 @@ class SplitExecution:
 
     result: SplitResult
     shapes: tuple[object, ...]
+    partition_method: str = "Part.TopoShape.generalFuse(two planar tools)"
+    initial_partition_solid_count: int = 4
+    solids_per_quadrant: tuple[int, int, int, int] = (1, 1, 1, 1)
 
     def resolve_shape(self, geometry_reference: str) -> object:
         """Resolve one immutable part reference to its runtime shape."""
@@ -59,10 +64,10 @@ class SplitterEngine:
     ) -> SplitExecution:
         """Return four validated solids and an immutable split result.
 
-        The source is intersected with four axis-aligned clipping prisms whose
-        shared boundaries are the bounding-box centre X and Y planes. Prisms
-        span the exact full source Z range. Quadrants are produced in lower-left,
-        lower-right, upper-left, upper-right model-coordinate order.
+        One OpenCASCADE general-fuse partition slices the source with two
+        planar faces spanning its full Z depth. Resulting source fragments are
+        then classified in lower-left, lower-right, upper-left, upper-right
+        model-coordinate order.
 
         Printable-limit violations remain recorded workflow results; they do
         not invalidate otherwise sound split geometry.
@@ -107,28 +112,32 @@ class SplitterEngine:
         if not math.isfinite(source_volume) or source_volume <= 0.0:
             raise SplitSourceError("Source solid must have positive finite volume.")
 
+        partition_solids = self._partition_source(source_solid, cut_x, cut_y)
+        classified = self._classify_partition_solids(
+            partition_solids,
+            cut_x,
+            cut_y,
+        )
         specifications = (
-            ("Part_1", "lower_left", bounds.XMin, bounds.YMin, cut_x, cut_y),
-            ("Part_2", "lower_right", cut_x, bounds.YMin, bounds.XMax, cut_y),
-            ("Part_3", "upper_left", bounds.XMin, cut_y, cut_x, bounds.YMax),
-            ("Part_4", "upper_right", cut_x, cut_y, bounds.XMax, bounds.YMax),
+            ("Part_1", "lower_left"),
+            ("Part_2", "lower_right"),
+            ("Part_3", "upper_left"),
+            ("Part_4", "upper_right"),
         )
         shapes: list[object] = []
         parts: list[PrintablePart] = []
         result_id = f"{stable_source_id}:split:result:0001"
 
         for index, specification in enumerate(specifications, start=1):
-            name, quadrant, x_min, y_min, x_max, y_max = specification
-            result_shape = self._intersect_quadrant(
-                source_solid,
-                float(x_min),
-                float(y_min),
-                float(x_max),
-                float(y_max),
-                float(bounds.ZMin),
-                float(bounds.ZMax),
-                name,
-            )
+            name, quadrant = specification
+            candidates = classified[index - 1]
+            if len(candidates) != 1:
+                raise InvalidResultingSolidError(
+                    f"{name} contains {len(candidates)} disconnected material "
+                    "components after center-plane partition; V4.00 requires "
+                    "one printable solid per quadrant."
+                )
+            result_shape = self._validated_partition_solid(candidates[0], name)
             part_id = f"{stable_source_id}:split:part:{index:04d}"
             printable_part = self._part_record(
                 result_shape,
@@ -149,7 +158,6 @@ class SplitterEngine:
             )
 
         tolerance = volume_tolerance_mm3(source_volume)
-        self._validate_non_overlapping(tuple(shapes), tolerance)
         result_volume = sum(float(item.Volume) for item in shapes)
         volume_difference = abs(source_volume - result_volume)
         if volume_difference > tolerance:
@@ -182,7 +190,12 @@ class SplitterEngine:
             all_parts_printable=all_printable,
             validation_messages=messages,
         )
-        return SplitExecution(result=result, shapes=tuple(shapes))
+        return SplitExecution(
+            result=result,
+            shapes=tuple(shapes),
+            initial_partition_solid_count=len(partition_solids),
+            solids_per_quadrant=tuple(len(items) for items in classified),
+        )
 
     @staticmethod
     def _validated_source_solid(shape: object) -> object:
@@ -193,54 +206,156 @@ class SplitterEngine:
             raise SplitSourceError(str(error)) from error
 
     @staticmethod
-    def _intersect_quadrant(
+    def _partition_source(
         source_solid: object,
-        x_min: float,
-        y_min: float,
-        x_max: float,
-        y_max: float,
-        z_min: float,
-        z_max: float,
-        name: str,
-    ) -> object:
-        """Intersect one exact X/Y quadrant prism with the source solid."""
+        cut_x: float,
+        cut_y: float,
+    ) -> tuple[object, ...]:
+        """Partition the source once with two exact center-plane faces.
+
+        OpenCASCADE ``generalFuse`` partitions the source and both zero-volume
+        planar tools coherently. Because the tools are faces, every resulting
+        solid necessarily originates from the source; no history-map filtering
+        is needed. This avoids a FreeCAD SplitAPI history omission observed on
+        the real panel. No healing, refining, or source mutation is performed.
+        """
         try:
             import Part
             from FreeCAD import Vector
 
-            tool = Part.makeBox(
-                x_max - x_min,
-                y_max - y_min,
-                z_max - z_min,
-                Vector(x_min, y_min, z_min),
+            bounds = source_solid.BoundBox
+            # Extend the bounded faces beyond every source extent so their
+            # outer edges cannot coincide with complex source boundaries.
+            # This changes neither infinite-plane location nor cut geometry.
+            margin = max(
+                float(bounds.XLength),
+                float(bounds.YLength),
+                float(bounds.ZLength),
             )
-            intersection = source_solid.common(tool)
+            x_plane = SplitterEngine._plane_face(
+                (
+                    (cut_x, bounds.YMin - margin, bounds.ZMin - margin),
+                    (cut_x, bounds.YMax + margin, bounds.ZMin - margin),
+                    (cut_x, bounds.YMax + margin, bounds.ZMax + margin),
+                    (cut_x, bounds.YMin - margin, bounds.ZMax + margin),
+                ),
+                Part,
+                Vector,
+            )
+            y_plane = SplitterEngine._plane_face(
+                (
+                    (bounds.XMin - margin, cut_y, bounds.ZMin - margin),
+                    (bounds.XMax + margin, cut_y, bounds.ZMin - margin),
+                    (bounds.XMax + margin, cut_y, bounds.ZMax + margin),
+                    (bounds.XMin - margin, cut_y, bounds.ZMax + margin),
+                ),
+                Part,
+                Vector,
+            )
+            fuzzy_tolerance = max(
+                PARTITION_FUZZY_TOLERANCE_MM,
+                float(source_solid.getTolerance(1)),
+            )
+            partition, _history = source_solid.generalFuse(
+                (
+                    Part.makeCompound((x_plane,)),
+                    Part.makeCompound((y_plane,)),
+                ),
+                fuzzy_tolerance,
+            )
         except Exception as error:
             raise SplitOperationError(
-                f"Boolean intersection failed for {name}."
+                "Center-plane partition failed during OpenCASCADE general fuse."
             ) from error
 
         try:
-            solids = tuple(intersection.Solids)
-            if intersection.isNull() or not intersection.isValid():
-                raise InvalidResultingSolidError(
-                    f"{name} is null or invalid after splitting."
+            if partition.isNull() or not partition.isValid():
+                raise SplitOperationError(
+                    "Center-plane partition returned null or invalid geometry."
                 )
-            if len(solids) != 1:
-                raise InvalidResultingSolidError(
-                    f"{name} must contain exactly one solid; found {len(solids)}."
+            solids = tuple(partition.Solids)
+            if not solids:
+                raise UnexpectedPartCountError(
+                    "Center-plane partition returned no material solids."
                 )
-            result = solids[0].removeSplitter()
+            return tuple(sorted(solids, key=SplitterEngine._solid_sort_key))
+        except SplitOperationError:
+            raise
+        except Exception as error:
+            raise SplitOperationError(
+                "Unable to inspect center-plane partition result."
+            ) from error
+
+    @staticmethod
+    def _plane_face(points: tuple[tuple[float, float, float], ...], Part, Vector):
+        """Build one bounded planar cutting face from four scalar corners."""
+        vertices = [Vector(*point) for point in points]
+        return Part.Face(Part.makePolygon((*vertices, vertices[0])))
+
+    @staticmethod
+    def _solid_sort_key(solid: object) -> tuple[float, ...]:
+        """Return a deterministic scalar ordering key for partition solids."""
+        bounds = solid.BoundBox
+        center = solid.CenterOfMass
+        return (
+            float(bounds.XMin), float(bounds.YMin), float(bounds.ZMin),
+            float(bounds.XMax), float(bounds.YMax), float(bounds.ZMax),
+            float(center.x), float(center.y), float(center.z),
+            float(solid.Volume),
+        )
+
+    @staticmethod
+    def _classify_partition_solids(
+        solids: tuple[object, ...],
+        cut_x: float,
+        cut_y: float,
+    ) -> tuple[tuple[object, ...], ...]:
+        """Classify each partition solid by its unambiguous half-space bounds.
+
+        A result that still crosses either cutting plane is rejected instead
+        of being assigned from a potentially misleading centre of mass.
+        """
+        quadrants: list[list[object]] = [[], [], [], []]
+        tolerance = PARTITION_CLASSIFICATION_TOLERANCE_MM
+        for solid in solids:
+            bounds = solid.BoundBox
+            left = float(bounds.XMax) <= cut_x + tolerance
+            right = float(bounds.XMin) >= cut_x - tolerance
+            lower = float(bounds.YMax) <= cut_y + tolerance
+            upper = float(bounds.YMin) >= cut_y - tolerance
+            if left == right or lower == upper:
+                raise SplitOperationError(
+                    "Center-plane partition left a material solid crossing or "
+                    "ambiguously touching a cut plane."
+                )
+            quadrant_index = (
+                0 if left and lower else
+                1 if right and lower else
+                2 if left and upper else
+                3
+            )
+            quadrants[quadrant_index].append(solid)
+        return tuple(
+            tuple(sorted(items, key=SplitterEngine._solid_sort_key))
+            for items in quadrants
+        )
+
+    @staticmethod
+    def _validated_partition_solid(shape: object, name: str) -> object:
+        """Return one non-empty valid partition solid without refinement."""
+        try:
             if (
-                result.isNull()
-                or not result.isValid()
-                or len(result.Solids) != 1
-                or float(result.Volume) <= 0.0
+                shape.isNull()
+                or not shape.isValid()
+                or not shape.isClosed()
+                or shape.ShapeType != "Solid"
+                or len(shape.Solids) != 1
+                or float(shape.Volume) <= 0.0
             ):
                 raise InvalidResultingSolidError(
-                    f"{name} is not one non-empty valid solid."
+                    f"{name} is not one non-empty valid closed solid."
                 )
-            return result
+            return shape
         except InvalidResultingSolidError:
             raise
         except Exception as error:
@@ -297,27 +412,3 @@ class SplitterEngine:
             is_printable=within_x and within_y,
             validation_messages=tuple(messages),
         )
-
-    @staticmethod
-    def _validate_non_overlapping(
-        shapes: tuple[object, ...],
-        volume_tolerance: float,
-    ) -> None:
-        """Reject any pair whose interiors overlap above kernel tolerance."""
-        for first_index, first in enumerate(shapes):
-            for second_index, second in enumerate(
-                shapes[first_index + 1 :],
-                start=first_index + 1,
-            ):
-                try:
-                    overlap_volume = float(first.common(second).Volume)
-                except Exception as error:
-                    raise SplitOperationError(
-                        "Unable to verify quadrant overlap."
-                    ) from error
-                if overlap_volume > volume_tolerance:
-                    raise SplitOperationError(
-                        f"Part_{first_index + 1} and Part_{second_index + 1} "
-                        "overlap by "
-                        f"{format_mm(overlap_volume)} mm^3."
-                    )
