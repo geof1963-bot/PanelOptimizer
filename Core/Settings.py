@@ -38,23 +38,17 @@ class PanelSettings:
 
 @dataclass(frozen=True)
 class JoinerySettings:
-    """Invisible assembly parameters."""
+    """Simple V4.40 wooden-dowel planning parameters, in millimetres."""
 
-    DOWEL_DIAMETER: float = 4.0
-    HOLE_DIAMETER: float = 4.3
-
-    DOWEL_MAX_LENGTH: float = 30.0
-
-    HOLE_DEPTH: float = 20.0
-
-    ENTRANCE_CHAMFER: float = 0.40
-
-    MIN_DISTANCE_FROM_EDGE: float = 10.0
-
-    MIN_DISTANCE_FROM_DECORATION: float = 8.0
-
-    MIN_DOWEL_SPACING: float = 80.0
-    MAX_DOWEL_SPACING: float = 120.0
+    DOWEL_DIAMETER_MM: float = 4.0
+    DOWEL_HOLE_DIAMETER_MM: float = 4.3
+    DOWEL_LENGTH_MM: float = 30.0
+    DOWEL_AXIS_HEIGHT_MM: float = 2.5
+    DOWEL_EDGE_MARGIN_MM: float = 15.0
+    DOWEL_MIN_MATERIAL_MARGIN_MM: float = 2.0
+    DOWEL_CENTER_EXCLUSION_MM: float = 20.0
+    DOWELS_TARGET_PER_BRANCH: int = 3
+    DOWELS_MIN_PER_BRANCH: int = 2
 
 
 @dataclass(frozen=True)

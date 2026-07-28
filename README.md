@@ -88,8 +88,27 @@ are tried conservatively: any result other than exactly four solids is rejected,
 then a one-seam detour or the proven straight fallback is attempted. Final
 printability, V4.26 watertight reconstruction, and transactional four-STL
 validation remain unchanged. Two owned lightweight preview objects show the
-actual accepted paths in the document. No global graph solver, scoring system,
-joinery, or dowel logic is involved.
+actual accepted paths in the document. No global graph solver or scoring
+system is involved.
+
+## V4.40 assembly-alignment dowel holes
+
+After V4.30 has produced exactly four transient solids, `DowelPlanner` splits
+the accepted seams into the four mating branches and targets three positions
+per branch. Candidate points start at 25/50/75 percent of branch arc length and
+move deterministically in 5 mm increments when required. The planner enforces
+the configured center and outer-edge exclusions, checks a 2 mm material margin
+against sampled opening boundaries, and performs local B-rep subtraction tests
+to prove that exactly the intended pair of parts contains material at the
+candidate cylinder.
+
+Each accepted 4.3 mm diameter, 30 mm long horizontal cutter is centered on the
+seam at `ZMin + 2.5 mm`; its axis is the canonical XY normal to the local seam
+tangent. The same cylinder is subtracted from only the two mating transient
+parts, which makes the paired holes coaxial. The source and seam paths remain
+unchanged. `PanelOptimizer_Dowels` previews the planned cylinders, while only
+the four drilled parts proceed to the unchanged V4.26 mesh and transactional
+STL pipeline. No dowel solid, strength score, lip, or other joinery is created.
 
 ---
 

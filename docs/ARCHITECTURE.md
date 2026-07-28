@@ -270,6 +270,32 @@ four solids enters the unchanged V4.26 mesh/export pipeline. Runtime paths and
 FreeCAD cutters never enter `Core.Models`. Preview objects are document-only UI
 artifacts and remain separate from `PanelOptimizer_Result`.
 
+### V4.40 dowel-alignment step
+
+`DowelPlanner` is one focused runtime-geometry component between the accepted
+V4.30 `MacroSplitResult` and the unchanged V4.26 mesh pipeline. It divides the
+two accepted polylines at their unique intersection into vertical-below,
+vertical-above, horizontal-left, and horizontal-right branches. Immutable,
+scalar-only records describe the branch length, accepted dowel centers, local
+tangents/normals, intended part pair, dimensions, and rejected-candidate
+reasons. FreeCAD solids and cutters remain transient runtime values.
+
+Candidate centers are generated deterministically from 25/50/75 percent arc-
+length targets. The planner enforces the configured center exclusion, panel-
+edge margin, and opening-boundary material margin before an exact local B-rep
+test. That test requires positive cylindrical material removal from both mating
+parts and geometry-tolerance-zero removal from the other two. A plan is rejected
+when any branch has fewer than two accepted positions.
+
+Applying a valid plan copies the four V4.30 solids and subtracts one shared
+horizontal cylinder from each intended pair, guaranteeing coaxial mating holes.
+It neither edits the source nor changes seam generation, groove geometry, or
+the full-depth slot. An owned `PanelOptimizer_Dowels` document preview is a UI
+artifact only. The resulting four drilled solids then enter the existing V4.26
+watertight mesh and transactional STL validation unchanged. This step creates
+alignment cavities only; it creates no dowels, other joinery, or strength
+evaluation.
+
 ## 5. Analysis responsibility boundaries
 
 ### GeometrySnapshot: global source measurements

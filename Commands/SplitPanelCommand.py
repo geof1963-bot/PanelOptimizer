@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""FreeCAD GUI command for the V4.26 watertight mesh workflow."""
+"""FreeCAD GUI command for the V4.40 dowelled four-STL workflow."""
 
 from __future__ import annotations
 
@@ -9,6 +9,7 @@ import FreeCAD
 import FreeCADGui
 
 from Core.Exceptions import PanelOptimizerError
+from Core.DowelPlanner import DowelPlanner
 from Core.MacroPartExtractor import MacroPartExtractor
 from Core.MacroSplitCore import MacroGrooveParameters, MacroSplitCore
 from Core.MeshPatchRebuilder import build_macro_mesh_parts, export_mesh_parts
@@ -50,7 +51,7 @@ class PanelOptimizerSplitPanelCommand:
         return FreeCAD.ActiveDocument is not None
 
     def Activated(self):
-        """Run V4.21 cutting, local mesh patching, and four-STL export."""
+        """Run V4.30 seams, V4.40 dowels, V4.26 mesh, and four-STL export."""
         document = FreeCAD.ActiveDocument
         if document is None:
             self._error("PanelOptimizer: no active document.")
@@ -90,6 +91,8 @@ class PanelOptimizerSplitPanelCommand:
                 raise PanelOptimizerError(
                     "No seam candidate produced exactly four parts."
                 )
+            dowel_application = DowelPlanner().apply(macro_result)
+            macro_result = dowel_application.macro_result
             mesh_parts = build_macro_mesh_parts(macro_result)
             extraction = MacroPartExtractor().extract(
                 macro_result,
@@ -106,6 +109,10 @@ class PanelOptimizerSplitPanelCommand:
                 macro_result.seam_plan,
                 float(bounds.ZMax) + 0.1,
             )
+            self._write_dowel_preview(
+                document,
+                dowel_application.cutters,
+            )
             FreeCAD.Console.PrintMessage(
                 "PanelOptimizer\n"
                 f"Source: {source_object.Name}\n"
@@ -120,6 +127,11 @@ class PanelOptimizerSplitPanelCommand:
                     f"{path.axis.title()} seam: {path.path_length_mm:.3f} mm, "
                     f"max deviation {path.maximum_deviation_mm:.3f} mm, "
                     f"features {len(path.followed_feature_ids)}\n"
+                )
+            for branch in dowel_application.plan.branches:
+                FreeCAD.Console.PrintMessage(
+                    f"{branch.branch_id}: "
+                    f"{len(branch.accepted_dowel_ids)} dowels\n"
                 )
             for part in mesh_parts:
                 status = "watertight - OK" if part.is_printable else "EXCEEDS LIMIT"
@@ -182,6 +194,15 @@ class PanelOptimizerSplitPanelCommand:
                 raise PanelOptimizerError(
                     f"Existing object '{name}' is not an owned seam preview."
                 )
+        dowels = document.getObject("PanelOptimizer_Dowels")
+        if dowels is not None and (
+            "PanelOptimizerRole" not in tuple(dowels.PropertiesList)
+            or dowels.PanelOptimizerRole != "PanelOptimizer.DowelPreview.v4"
+        ):
+            raise PanelOptimizerError(
+                "Existing object 'PanelOptimizer_Dowels' is not an owned "
+                "dowel preview."
+            )
 
     @staticmethod
     def _write_seam_previews(document, seam_plan, z_value) -> tuple[object, object]:
@@ -220,6 +241,38 @@ class PanelOptimizerSplitPanelCommand:
             previews.append(output)
         document.recompute()
         return tuple(previews)
+
+    @staticmethod
+    def _write_dowel_preview(document, cutters) -> object:
+        """Create or update one owned lightweight compound of planned holes."""
+        import Part
+
+        name = "PanelOptimizer_Dowels"
+        output = document.getObject(name)
+        if output is None:
+            output = document.addObject("Part::Feature", name)
+            output.addProperty(
+                "App::PropertyString",
+                "PanelOptimizerRole",
+                "PanelOptimizer",
+            )
+            output.PanelOptimizerRole = "PanelOptimizer.DowelPreview.v4"
+            output.setEditorMode("PanelOptimizerRole", 1)
+        elif (
+            "PanelOptimizerRole" not in tuple(output.PropertiesList)
+            or output.PanelOptimizerRole != "PanelOptimizer.DowelPreview.v4"
+        ):
+            raise PanelOptimizerError(
+                f"Existing object '{name}' is not an owned dowel preview."
+            )
+        output.Shape = Part.makeCompound(tuple(cutter.copy() for cutter in cutters))
+        output.Label = name
+        view = getattr(output, "ViewObject", None)
+        if view is not None:
+            view.ShapeColor = (0.95, 0.65, 0.10)
+            view.Transparency = 65
+        document.recompute()
+        return output
 
     @staticmethod
     def _select_output_directory() -> str:

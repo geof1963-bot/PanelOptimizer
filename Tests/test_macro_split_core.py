@@ -178,7 +178,7 @@ class MacroSplitCoreTests(unittest.TestCase):
         document = FreeCAD.newDocument("PanelOptimizerMacroSplitCommand")
         try:
             source_object = document.addObject("Part::Feature", "FINAL_PANEL")
-            source_object.Shape = Part.makeBox(100, 80, 8)
+            source_object.Shape = Part.makeBox(300, 280, 8)
             before = self._metrics(source_object.Shape)
             with patch(
                 "Commands.SplitPanelCommand.FreeCADGui.Selection",
@@ -203,6 +203,7 @@ class MacroSplitCoreTests(unittest.TestCase):
             self.assertIsNotNone(
                 document.getObject("PanelOptimizer_HorizontalSeam")
             )
+            self.assertIsNotNone(document.getObject("PanelOptimizer_Dowels"))
             self.assertEqual(self._metrics(source_object.Shape), before)
         finally:
             FreeCAD.closeDocument(document.Name)

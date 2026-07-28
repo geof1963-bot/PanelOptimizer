@@ -121,6 +121,11 @@ class JoineryError(PanelOptimizerError):
     pass
 
 
+class DowelPlanningError(JoineryError):
+    """Raised when a safe deterministic dowel plan cannot be produced."""
+    pass
+
+
 class ExportError(PanelOptimizerError):
     """Export related error."""
     pass
