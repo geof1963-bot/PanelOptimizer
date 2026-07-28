@@ -460,12 +460,12 @@ class SourceShapeResolutionTests(unittest.TestCase):
             ):
                 split_module.PanelOptimizerSplitPanelCommand().Activated()
 
-            self.assertEqual(errors, [])
-            self.assertTrue(
-                any("Macro-based cut completed" in item for item in messages)
+            self.assertTrue(errors)
+            self.assertFalse(
+                any("Automatic repair is disabled" in item for item in errors)
             )
+            self.assertEqual(messages, [])
             self.assertEqual(warnings, [])
-            self.assertIsNotNone(document.getObject("FINAL_PANEL_BEVELED"))
             after_shape = source.Shape
             after_geometry = (
                 after_shape.isNull(),

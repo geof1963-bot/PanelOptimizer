@@ -221,11 +221,37 @@ horizontal `cut()` operations followed by best-effort `removeSplitter()`.
 The real bounding-box center is kept separate from the effective cut location:
 positive vertical offset moves cut X right and positive horizontal offset moves
 cut Y up. `MacroSplitCore` returns one transient runtime shape plus scalar
-metadata; it does not create four parts, validate printability, export files,
-or place runtime geometry in `Core.Models`. The current Split command invokes
-this path with zero offsets and creates one `FINAL_PANEL_BEVELED` result object.
-The V4.00 `SplitterEngine`, document writer, and export engine remain available
-but are not prerequisites for this pragmatic command path.
+metadata and does not place runtime geometry in `Core.Models`.
+
+V4.21 extends each macro cutter from the existing groove bottom with a
+`0.5 mm` full-depth section. The section starts at the existing bottom-left
+coordinate (`cut + 0.25 mm`) and ends at `cut + 0.75 mm`, remaining inside the
+unchanged `0.85 mm` visible flat-bottom segment. The same two sequential
+vertical/horizontal `cut()` operations now create four solids directly.
+
+`MacroPartExtractor` accepts only that full-depth macro result and reads its
+existing `Solids` without another slicing operation. Its strict API continues
+to validate ordinary B-rep extraction. The V4.26 command uses its explicitly
+relaxed document-output mode only after the mesh pipeline has accepted four
+closed positive-volume quadrants; this avoids deep validation and pairwise
+booleans on the fragile real-panel B-reps.
+
+`MeshPatchRebuilder` applies only the V4.24 tessellation (`0.1 mm`, `15°`,
+absolute deflection). It extracts deterministic mesh boundary cycles and
+reconstructs only supported planar missing patches. A single narrow cycle is
+triangulated from its existing ordered boundary. Nested coplanar cycles are
+triangulated as outer polygon minus inner holes. No existing vertex is moved;
+new vertices may only arise inside a planar multi-loop triangulation. A
+non-planar boundary whose deviation exceeds `0.02 mm` is rejected. Accepted
+meshes must have zero open and non-manifold edges, one component, coherent
+volume, unchanged bounds, and `Mesh.isSolid() == true`.
+
+The Split command retains `SplitDocumentWriter` for deterministic document
+objects, checks only `Settings.Split.MAX_PART_WIDTH/HEIGHT`, and uses the
+focused transactional mesh exporter. The exporter writes all four temporary
+STLs, reopens and validates each, then atomically replaces the final set with
+rollback of previous valid files on failure. It does not call AnalyzerEngine,
+repair the source B-rep, globally remesh, or generically fill holes.
 
 ## 5. Analysis responsibility boundaries
 

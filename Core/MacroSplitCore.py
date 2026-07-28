@@ -19,11 +19,10 @@ __all__ = [
 class MacroGrooveParameters:
     """Exact scalar groove parameters shared by both reference macros.
 
-    All values are model-coordinate millimetres. The profile has a
-    ``top_width_mm`` opening at the source maximum-Z face, a flat
-    ``bottom_width_mm`` at ``groove_depth_mm`` below that face, one sloped
-    negative-axis wall, and one vertical positive-axis wall. ``overlap_mm``
-    extends each extrusion beyond both transverse panel boundaries.
+    All values are model-coordinate millimetres. The visible V4.10 profile is
+    unchanged. V4.21 also uses ``bottom_width_mm`` as the full-depth slot width,
+    starting at the existing profile's bottom-left coordinate. ``overlap_mm``
+    extends cutters beyond transverse and bottom panel boundaries.
     """
 
     groove_depth_mm: float = 1.2
@@ -48,8 +47,12 @@ class MacroSplitResult:
     vertical_offset_mm: float
     horizontal_offset_mm: float
     source_volume_mm3: float
+    surface_groove_result_volume_mm3: float
+    surface_groove_removed_volume_mm3: float
+    additional_separation_removed_volume_mm3: float
     result_volume_mm3: float
     solid_count: int
+    separation_width_mm: float
     cleanup_applied: bool
 
 
@@ -89,6 +92,7 @@ class MacroSplitCore:
             ymin = float(bounds.YMin)
             ymax = float(bounds.YMax)
             zmax = float(bounds.ZMax)
+            zmin = float(bounds.ZMin)
             width = xmax - xmin
             height = ymax - ymin
             source_volume = float(panel_shape.Volume)
@@ -98,7 +102,7 @@ class MacroSplitCore:
             ) from error
         if not all(
             math.isfinite(value)
-            for value in (xmin, xmax, ymin, ymax, zmax, source_volume)
+            for value in (xmin, xmax, ymin, ymax, zmin, zmax, source_volume)
         ) or width <= 0.0 or height <= 0.0:
             raise SplitSourceError(
                 "Macro split source must have finite positive X/Y extents."
@@ -111,12 +115,17 @@ class MacroSplitCore:
         half_top = profile.top_width_mm / 2.0
         half_bottom = profile.bottom_width_mm / 2.0
         z_bottom = zmax - profile.groove_depth_mm
+        slot_left_x = cut_x + half_bottom
+        slot_right_x = slot_left_x + profile.bottom_width_mm
+        slot_lower_y = cut_y + half_bottom
+        slot_upper_y = slot_lower_y + profile.bottom_width_mm
+        below_panel = zmin - profile.overlap_mm
 
         try:
             import Part
             from FreeCAD import Vector
 
-            vertical_cutter = self._extruded_profile(
+            surface_vertical_cutter = self._extruded_profile(
                 (
                     (cut_x - half_top, ymin - profile.overlap_mm, zmax),
                     (cut_x + half_top, ymin - profile.overlap_mm, zmax),
@@ -127,7 +136,7 @@ class MacroSplitCore:
                 Part,
                 Vector,
             )
-            horizontal_cutter = self._extruded_profile(
+            surface_horizontal_cutter = self._extruded_profile(
                 (
                     (xmin - profile.overlap_mm, cut_y - half_top, zmax),
                     (xmin - profile.overlap_mm, cut_y + half_top, zmax),
@@ -138,6 +147,36 @@ class MacroSplitCore:
                 Part,
                 Vector,
             )
+            vertical_cutter = self._extruded_profile(
+                (
+                    (cut_x - half_top, ymin - profile.overlap_mm, zmax),
+                    (cut_x + half_top, ymin - profile.overlap_mm, zmax),
+                    (cut_x + half_top, ymin - profile.overlap_mm, z_bottom),
+                    (slot_right_x, ymin - profile.overlap_mm, z_bottom),
+                    (slot_right_x, ymin - profile.overlap_mm, below_panel),
+                    (slot_left_x, ymin - profile.overlap_mm, below_panel),
+                    (slot_left_x, ymin - profile.overlap_mm, z_bottom),
+                ),
+                Vector(0.0, height + profile.overlap_mm * 2.0, 0.0),
+                Part,
+                Vector,
+            )
+            horizontal_cutter = self._extruded_profile(
+                (
+                    (xmin - profile.overlap_mm, cut_y - half_top, zmax),
+                    (xmin - profile.overlap_mm, cut_y + half_top, zmax),
+                    (xmin - profile.overlap_mm, cut_y + half_top, z_bottom),
+                    (xmin - profile.overlap_mm, slot_upper_y, z_bottom),
+                    (xmin - profile.overlap_mm, slot_upper_y, below_panel),
+                    (xmin - profile.overlap_mm, slot_lower_y, below_panel),
+                    (xmin - profile.overlap_mm, slot_lower_y, z_bottom),
+                ),
+                Vector(width + profile.overlap_mm * 2.0, 0.0, 0.0),
+                Part,
+                Vector,
+            )
+            surface_result = panel_shape.cut(surface_vertical_cutter)
+            surface_result = surface_result.cut(surface_horizontal_cutter)
             result = panel_shape.cut(vertical_cutter)
             result = result.cut(horizontal_cutter)
         except Exception as error:
@@ -158,6 +197,7 @@ class MacroSplitCore:
             if result.isNull():
                 raise SplitOperationError("Macro-based cut returned null geometry.")
             result_volume = float(result.Volume)
+            surface_result_volume = float(surface_result.Volume)
             solid_count = len(result.Solids)
         except SplitOperationError:
             raise
@@ -174,8 +214,16 @@ class MacroSplitCore:
             vertical_offset_mm=offset_x,
             horizontal_offset_mm=offset_y,
             source_volume_mm3=source_volume,
+            surface_groove_result_volume_mm3=surface_result_volume,
+            surface_groove_removed_volume_mm3=(
+                source_volume - surface_result_volume
+            ),
+            additional_separation_removed_volume_mm3=(
+                surface_result_volume - result_volume
+            ),
             result_volume_mm3=result_volume,
             solid_count=solid_count,
+            separation_width_mm=profile.bottom_width_mm,
             cleanup_applied=cleanup_applied,
         )
 
@@ -217,5 +265,13 @@ class MacroSplitCore:
         if any(value <= 0.0 for value in values):
             raise SplitOperationError(
                 "Macro groove dimensions and overlap must be positive."
+            )
+        if (
+            parameters.bottom_width_mm
+            > (parameters.top_width_mm - parameters.bottom_width_mm) / 2.0
+        ):
+            raise SplitOperationError(
+                "Macro separation width must fit inside the existing flat "
+                "bottom segment."
             )
         return parameters

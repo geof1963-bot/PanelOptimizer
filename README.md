@@ -42,21 +42,34 @@ Current development roadmap:
 - STL export
 - STEP export (future)
 
-## V4.10 pragmatic macro split prototype
+## V4.26 watertight mesh output
 
-The current workbench reproduces the proven crossed-groove macro geometry:
+The current workbench reproduces the proven crossed-groove geometry and then
+extracts four printable parts:
 
 1. Open a document and select one panel object.
-2. Click **Macro Split Panel**.
+2. Click **Split Panel**.
 3. PanelOptimizer copies the selected shape and cuts the macro's asymmetric
    full-length grooves at the source bounding-box X/Y center.
-4. The document receives one `FINAL_PANEL_BEVELED` result object.
+4. A `0.5 mm` full-depth section continuing from each groove bottom directly
+   separates the result into four solids during the two macro-style cuts.
+5. The fixed V4.24 tessellation is applied to each solid. Planar open boundary
+   components are reconstructed locally without changing the B-rep; nested
+   loops remain holes and ambiguous non-planar components are rejected.
+6. The document receives `PanelOptimizer_Result` with `Part_1` through
+   `Part_4` in deterministic quadrant order.
+7. If every part satisfies `Settings.Split.MAX_PART_WIDTH/HEIGHT`, select an
+   output directory for transactional `Part_1.stl` through `Part_4.stl` export.
+   All four files are reopened and must be watertight before commit.
 
 The source remains visible and unchanged. This path intentionally does not run
 AnalyzerEngine and can therefore preserve the practical macro behavior on
-deep-analysis-invalid input. Four-part extraction, printable-size validation,
-four-file STL export, intelligent seams, path scoring, and joinery are not part
-of V4.10.
+deep-analysis-invalid input. Each V4.21 part must nevertheless be one closed,
+positive-volume solid. Mesh patching accepts only deterministic planar boundary
+cycles, creates no B-rep geometry, and preserves part bounds and coherent
+volume. No SliceAPI, general-fuse, global remeshing, or generic hole filling is
+used. Intelligent seams, path scoring, automatic offset optimization, and
+joinery are not part of V4.26.
 
 The previous V4.00 `SplitterEngine`, result writer, and `ExportEngine` remain in
 the repository for later evaluation and are not deleted by this mission.

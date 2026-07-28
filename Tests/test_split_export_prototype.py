@@ -771,7 +771,7 @@ class SplitExportPrototypeTests(unittest.TestCase):
         from Commands.SplitPanelCommand import PanelOptimizerSplitPanelCommand
 
         resources = PanelOptimizerSplitPanelCommand().GetResources()
-        self.assertEqual(resources["MenuText"], "Macro Split Panel")
+        self.assertEqual(resources["MenuText"], "Split Panel")
 
 
 if __name__ == "__main__":

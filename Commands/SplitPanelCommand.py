@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""FreeCAD GUI command for the pragmatic V4.10 macro-equivalent cut."""
+"""FreeCAD GUI command for the V4.26 watertight mesh workflow."""
 
 from __future__ import annotations
 
@@ -9,12 +9,14 @@ import FreeCAD
 import FreeCADGui
 
 from Core.Exceptions import PanelOptimizerError
+from Core.MacroPartExtractor import MacroPartExtractor
 from Core.MacroSplitCore import MacroGrooveParameters, MacroSplitCore
-from Core.SplitWorkflow import validate_single_selection
+from Core.MeshPatchRebuilder import build_macro_mesh_parts, export_mesh_parts
+from Core.SplitWorkflow import SplitDocumentWriter, validate_single_selection
 
 
 class PanelOptimizerSplitPanelCommand:
-    """Create one macro-equivalent crossed-groove result object."""
+    """Create, validate, and export four parts from macro-cut geometry."""
 
     def __init__(
         self,
@@ -38,8 +40,8 @@ class PanelOptimizerSplitPanelCommand:
         )
         return {
             "Pixmap": icon_path,
-            "MenuText": "Macro Split Panel",
-            "ToolTip": "Apply the proven centered macro groove geometry",
+            "MenuText": "Split Panel",
+            "ToolTip": "Apply macro grooves, create four parts, and export STL",
         }
 
     def IsActive(self):
@@ -47,7 +49,7 @@ class PanelOptimizerSplitPanelCommand:
         return FreeCAD.ActiveDocument is not None
 
     def Activated(self):
-        """Apply the centered V4.10 macro cut without deep analysis."""
+        """Run V4.21 cutting, local mesh patching, and four-STL export."""
         document = FreeCAD.ActiveDocument
         if document is None:
             self._error("PanelOptimizer: no active document.")
@@ -57,31 +59,66 @@ class PanelOptimizerSplitPanelCommand:
             source_object = validate_single_selection(
                 FreeCADGui.Selection.getSelection()
             )
-            result = MacroSplitCore().cut(
+            macro_result = MacroSplitCore().cut(
                 source_object.Shape,
                 self._vertical_offset,
                 self._horizontal_offset,
                 self._parameters,
             )
-            output_object = document.addObject(
-                "Part::Feature",
-                "FINAL_PANEL_BEVELED",
+            mesh_parts = build_macro_mesh_parts(macro_result)
+            extraction = MacroPartExtractor().extract(
+                macro_result,
+                str(source_object.Name),
+                accept_closed_invalid=True,
+                verify_overlap=False,
             )
-            output_object.Shape = result.shape
-            document.recompute()
-            bounds = source_object.Shape.BoundBox
+            output_objects = SplitDocumentWriter().write(
+                document,
+                extraction.execution,
+            )
             FreeCAD.Console.PrintMessage(
-                "PanelOptimizer V4.10 - Macro Split\n"
+                "PanelOptimizer\n"
                 f"Source: {source_object.Name}\n"
-                f"Panel: {bounds.XLength:g} x {bounds.YLength:g} x "
-                f"{bounds.ZLength:g} mm\n"
-                f"Real center X/Y: {result.real_center_x_mm:g}, "
-                f"{result.real_center_y_mm:g}\n"
-                f"Vertical cut X: {result.cut_x_mm:g}\n"
-                f"Horizontal cut Y: {result.cut_y_mm:g}\n"
-                f"Offsets: X={result.vertical_offset_mm:g}, "
-                f"Y={result.horizontal_offset_mm:g}\n"
-                "Macro-based cut completed.\n"
+                f"Cuts: X = {macro_result.cut_x_mm:g}, "
+                f"Y = {macro_result.cut_y_mm:g}\n"
+            )
+            for part in mesh_parts:
+                status = "watertight - OK" if part.is_printable else "EXCEEDS LIMIT"
+                FreeCAD.Console.PrintMessage(
+                    f"{part.name}: {status}\n"
+                )
+            FreeCAD.Console.PrintMessage(
+                f"{len(output_objects)} parts created.\n"
+            )
+            if not all(part.is_printable for part in mesh_parts):
+                self._error(
+                    "PanelOptimizer: STL export blocked by printable limits:\n"
+                    + "\n".join(
+                        f"{part.name}: "
+                        + ", ".join(
+                            dimension
+                            for dimension, within in (
+                                ("X", part.within_x_limit),
+                                ("Y", part.within_y_limit),
+                            )
+                            if not within
+                        )
+                        + " exceeds configured limit"
+                        for part in mesh_parts
+                        if not part.is_printable
+                    )
+                )
+                return
+            output_directory = self._select_output_directory()
+            if not output_directory:
+                FreeCAD.Console.PrintWarning(
+                    "PanelOptimizer: STL export cancelled; four result solids "
+                    "remain in PanelOptimizer_Result.\n"
+                )
+                return
+            artifacts = export_mesh_parts(mesh_parts, output_directory)
+            FreeCAD.Console.PrintMessage(
+                f"{len(artifacts)} STL files exported.\n"
             )
         except PanelOptimizerError as error:
             self._error(f"PanelOptimizer: {error}")
@@ -90,6 +127,20 @@ class PanelOptimizerSplitPanelCommand:
                 "PanelOptimizer: unexpected macro split failure: "
                 f"{error}"
             )
+
+    @staticmethod
+    def _select_output_directory() -> str:
+        """Ask for the existing directory used by transactional export."""
+        from PySide import QtGui
+
+        return str(
+            QtGui.QFileDialog.getExistingDirectory(
+                None,
+                "Select PanelOptimizer STL output directory",
+                "",
+                QtGui.QFileDialog.ShowDirsOnly,
+            )
+        )
 
     @staticmethod
     def _error(message: str) -> None:

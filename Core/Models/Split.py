@@ -116,7 +116,10 @@ class SplitResult:
 
     result_id: str
     source_id: str
-    strategy: Literal["bounding_box_center_quadrants"]
+    strategy: Literal[
+        "bounding_box_center_quadrants",
+        "macro_full_depth_cut",
+    ]
     cut_x_mm: float
     cut_y_mm: float
     maximum_width_mm: float

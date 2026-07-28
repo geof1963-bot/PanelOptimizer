@@ -91,11 +91,16 @@ class MacroSplitCoreTests(unittest.TestCase):
     def _assert_matches_macro(self, shape, x_offset=0.0, y_offset=0.0):
         expected = self._macro_reference(shape, x_offset, y_offset)
         actual = MacroSplitCore().cut(shape, x_offset, y_offset)
-        self.assertEqual(self._metrics(actual.shape), self._metrics(expected))
-        self.assertEqual(
-            actual.shape.exportBrepToString(),
-            expected.exportBrepToString(),
+        self.assertAlmostEqual(
+            actual.surface_groove_result_volume_mm3,
+            expected.Volume,
+            places=7,
         )
+        self.assertEqual(actual.solid_count, 4)
+        self.assertTrue(all(solid.isValid() for solid in actual.shape.Solids))
+        self.assertTrue(all(solid.isClosed() for solid in actual.shape.Solids))
+        self.assertLess(actual.result_volume_mm3, expected.Volume)
+        self.assertEqual(actual.separation_width_mm, 0.5)
         return actual
 
     def test_centered_cut_matches_macro(self):
@@ -165,8 +170,8 @@ class MacroSplitCoreTests(unittest.TestCase):
             MacroGrooveParameters(1.2, 2.2, 0.5, 20.0),
         )
 
-    def test_workbench_command_creates_one_macro_result_without_analysis(self):
-        """Existing command now exposes the centered pragmatic V4.10 path."""
+    def test_workbench_command_creates_four_parts_without_analysis(self):
+        """V4.21 command writes four direct full-depth-cut solids."""
         import FreeCAD
         from Commands.SplitPanelCommand import PanelOptimizerSplitPanelCommand
 
@@ -175,17 +180,23 @@ class MacroSplitCoreTests(unittest.TestCase):
             source_object = document.addObject("Part::Feature", "FINAL_PANEL")
             source_object.Shape = Part.makeBox(100, 80, 8)
             before = self._metrics(source_object.Shape)
-            expected = MacroSplitCore().cut(source_object.Shape).shape
             with patch(
                 "Commands.SplitPanelCommand.FreeCADGui.Selection",
                 SimpleNamespace(getSelection=lambda: (source_object,)),
                 create=True,
+            ), patch.object(
+                PanelOptimizerSplitPanelCommand,
+                "_select_output_directory",
+                return_value="",
             ):
                 PanelOptimizerSplitPanelCommand().Activated()
 
-            output = document.getObject("FINAL_PANEL_BEVELED")
-            self.assertIsNotNone(output)
-            self.assertEqual(self._metrics(output.Shape), self._metrics(expected))
+            group = document.getObject("PanelOptimizer_Result")
+            self.assertIsNotNone(group)
+            self.assertEqual(
+                tuple(item.Name for item in group.Group),
+                ("Part_1", "Part_2", "Part_3", "Part_4"),
+            )
             self.assertEqual(self._metrics(source_object.Shape), before)
         finally:
             FreeCAD.closeDocument(document.Name)
