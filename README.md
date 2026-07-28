@@ -74,6 +74,23 @@ joinery are not part of V4.26.
 The previous V4.00 `SplitterEngine`, result writer, and `ExportEngine` remain in
 the repository for later evaluation and are not deleted by this mission.
 
+## V4.30 practical sinuous seams
+
+The Split Panel command now extracts inner wires from the panel's largest
+horizontal top face without invoking AnalyzerEngine. Within a configurable
+30 mm corridor it may approach and follow a simplified monotone portion of an
+opening boundary, while keeping a 12 mm straight exclusion zone around the
+single X/Y seam intersection. Offsets retain their V4.21 sign convention.
+
+The existing asymmetric groove and full-depth slot are applied as overlapping,
+united straight profile segments along each selected XY path. Candidate routes
+are tried conservatively: any result other than exactly four solids is rejected,
+then a one-seam detour or the proven straight fallback is attempted. Final
+printability, V4.26 watertight reconstruction, and transactional four-STL
+validation remain unchanged. Two owned lightweight preview objects show the
+actual accepted paths in the document. No global graph solver, scoring system,
+joinery, or dowel logic is involved.
+
 ---
 
 # Printing Constraints

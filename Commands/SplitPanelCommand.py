@@ -12,6 +12,7 @@ from Core.Exceptions import PanelOptimizerError
 from Core.MacroPartExtractor import MacroPartExtractor
 from Core.MacroSplitCore import MacroGrooveParameters, MacroSplitCore
 from Core.MeshPatchRebuilder import build_macro_mesh_parts, export_mesh_parts
+from Core.SinuousSeamPath import SinuousSeamPathFinder
 from Core.SplitWorkflow import SplitDocumentWriter, validate_single_selection
 
 
@@ -59,12 +60,36 @@ class PanelOptimizerSplitPanelCommand:
             source_object = validate_single_selection(
                 FreeCADGui.Selection.getSelection()
             )
-            macro_result = MacroSplitCore().cut(
+            self._validate_seam_preview_names(document)
+            path_finder = SinuousSeamPathFinder()
+            proposed_plan = path_finder.generate(
                 source_object.Shape,
                 self._vertical_offset,
                 self._horizontal_offset,
-                self._parameters,
             )
+            bounds = source_object.Shape.BoundBox
+            panel_bounds = (
+                float(bounds.XMin), float(bounds.XMax),
+                float(bounds.YMin), float(bounds.YMax),
+            )
+            macro_result = None
+            for candidate in path_finder.candidate_plans(
+                proposed_plan, panel_bounds
+            ):
+                attempt = MacroSplitCore().cut(
+                    source_object.Shape,
+                    self._vertical_offset,
+                    self._horizontal_offset,
+                    self._parameters,
+                    seam_plan=candidate,
+                )
+                if attempt.solid_count == 4:
+                    macro_result = attempt
+                    break
+            if macro_result is None:
+                raise PanelOptimizerError(
+                    "No seam candidate produced exactly four parts."
+                )
             mesh_parts = build_macro_mesh_parts(macro_result)
             extraction = MacroPartExtractor().extract(
                 macro_result,
@@ -76,12 +101,26 @@ class PanelOptimizerSplitPanelCommand:
                 document,
                 extraction.execution,
             )
+            self._write_seam_previews(
+                document,
+                macro_result.seam_plan,
+                float(bounds.ZMax) + 0.1,
+            )
             FreeCAD.Console.PrintMessage(
                 "PanelOptimizer\n"
                 f"Source: {source_object.Name}\n"
                 f"Cuts: X = {macro_result.cut_x_mm:g}, "
                 f"Y = {macro_result.cut_y_mm:g}\n"
             )
+            for path in (
+                macro_result.seam_plan.vertical,
+                macro_result.seam_plan.horizontal,
+            ):
+                FreeCAD.Console.PrintMessage(
+                    f"{path.axis.title()} seam: {path.path_length_mm:.3f} mm, "
+                    f"max deviation {path.maximum_deviation_mm:.3f} mm, "
+                    f"features {len(path.followed_feature_ids)}\n"
+                )
             for part in mesh_parts:
                 status = "watertight - OK" if part.is_printable else "EXCEEDS LIMIT"
                 FreeCAD.Console.PrintMessage(
@@ -127,6 +166,60 @@ class PanelOptimizerSplitPanelCommand:
                 "PanelOptimizer: unexpected macro split failure: "
                 f"{error}"
             )
+
+    @staticmethod
+    def _validate_seam_preview_names(document) -> None:
+        """Reject unowned reserved preview names before document mutation."""
+        for name in (
+            "PanelOptimizer_VerticalSeam",
+            "PanelOptimizer_HorizontalSeam",
+        ):
+            output = document.getObject(name)
+            if output is not None and (
+                "PanelOptimizerRole" not in tuple(output.PropertiesList)
+                or output.PanelOptimizerRole != "PanelOptimizer.SeamPreview.v4"
+            ):
+                raise PanelOptimizerError(
+                    f"Existing object '{name}' is not an owned seam preview."
+                )
+
+    @staticmethod
+    def _write_seam_previews(document, seam_plan, z_value) -> tuple[object, object]:
+        """Create or update two owned lightweight Part polyline previews."""
+        import Part
+
+        definitions = (
+            ("PanelOptimizer_VerticalSeam", seam_plan.vertical),
+            ("PanelOptimizer_HorizontalSeam", seam_plan.horizontal),
+        )
+        previews = []
+        for name, path in definitions:
+            output = document.getObject(name)
+            if output is None:
+                output = document.addObject("Part::Feature", name)
+                output.addProperty(
+                    "App::PropertyString",
+                    "PanelOptimizerRole",
+                    "PanelOptimizer",
+                )
+                output.PanelOptimizerRole = "PanelOptimizer.SeamPreview.v4"
+                output.setEditorMode("PanelOptimizerRole", 1)
+            elif (
+                "PanelOptimizerRole" not in tuple(output.PropertiesList)
+                or output.PanelOptimizerRole != "PanelOptimizer.SeamPreview.v4"
+            ):
+                raise PanelOptimizerError(
+                    f"Existing object '{name}' is not an owned seam preview."
+                )
+            vectors = tuple(
+                FreeCAD.Vector(point.x_mm, point.y_mm, z_value)
+                for point in path.points
+            )
+            output.Shape = Part.makePolygon(vectors)
+            output.Label = name
+            previews.append(output)
+        document.recompute()
+        return tuple(previews)
 
     @staticmethod
     def _select_output_directory() -> str:

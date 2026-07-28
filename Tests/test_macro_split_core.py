@@ -197,6 +197,12 @@ class MacroSplitCoreTests(unittest.TestCase):
                 tuple(item.Name for item in group.Group),
                 ("Part_1", "Part_2", "Part_3", "Part_4"),
             )
+            self.assertIsNotNone(
+                document.getObject("PanelOptimizer_VerticalSeam")
+            )
+            self.assertIsNotNone(
+                document.getObject("PanelOptimizer_HorizontalSeam")
+            )
             self.assertEqual(self._metrics(source_object.Shape), before)
         finally:
             FreeCAD.closeDocument(document.Name)

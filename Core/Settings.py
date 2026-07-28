@@ -73,6 +73,15 @@ class SplitSettings:
 
     NUMBER_OF_SOLUTIONS: int = 5
 
+    # V4.30 lightweight top-view seam-path geometry.
+    SEAM_SEARCH_CORRIDOR_MM: float = 30.0
+    SEAM_CENTER_EXCLUSION_MM: float = 12.0
+    SEAM_MIN_FEATURE_SIZE_MM: float = 8.0
+    SEAM_BOUNDARY_DEFLECTION_MM: float = 2.0
+    SEAM_SIMPLIFICATION_MM: float = 1.0
+    SEAM_APPROACH_LENGTH_MM: float = 5.0
+    SEAM_MAX_FEATURES: int = 1
+
 
 @dataclass(frozen=True)
 class AnalyzerSettings:

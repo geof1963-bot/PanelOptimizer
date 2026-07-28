@@ -253,6 +253,23 @@ STLs, reopens and validates each, then atomically replaces the final set with
 rollback of previous valid files on failure. It does not call AnalyzerEngine,
 repair the source B-rep, globally remesh, or generically fill holes.
 
+V4.30 inserts one focused step before `MacroSplitCore`: `SinuousSeamPathFinder`
+reads only the largest horizontal top planar face and converts its inner wires
+to immutable XY boundary samples. It deterministically selects at most one
+useful feature per seam from the configured 30 mm corridor, follows a monotone
+simplified portion of that boundary, and keeps both paths straight through the
+configured center exclusion zone. The paths are continuous, non-self-
+intersecting, edge-to-edge, and must intersect exactly once.
+
+`MacroSplitCore` retains its exact straight implementation when no plan is
+provided. For V4.30 it constructs overlapping and united line-segment cutters
+using the unchanged V4.21 asymmetric cross-section. The command tries the
+combined proposal, then deterministic single-detour candidates ordered by
+smaller deviation, then the straight fallback. Only a result containing exactly
+four solids enters the unchanged V4.26 mesh/export pipeline. Runtime paths and
+FreeCAD cutters never enter `Core.Models`. Preview objects are document-only UI
+artifacts and remain separate from `PanelOptimizer_Result`.
+
 ## 5. Analysis responsibility boundaries
 
 ### GeometrySnapshot: global source measurements
