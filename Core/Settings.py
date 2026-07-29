@@ -52,6 +52,14 @@ class JoinerySettings:
 
 
 @dataclass(frozen=True)
+class LipSettings:
+    """V4.50 top-surface mastic-lip dimensions, in millimetres."""
+
+    LIP_HEIGHT_MM: float = 0.30
+    LIP_WIDTH_MM: float = 0.80
+
+
+@dataclass(frozen=True)
 class SplitSettings:
     """Split engine constraints."""
 
@@ -139,6 +147,8 @@ class Settings:
     Panel = PanelSettings()
 
     Joinery = JoinerySettings()
+
+    Lips = LipSettings()
 
     Split = SplitSettings()
 

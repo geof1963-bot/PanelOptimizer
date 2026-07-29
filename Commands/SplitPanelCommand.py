@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""FreeCAD GUI command for the V4.40 dowelled four-STL workflow."""
+"""FreeCAD GUI command for the V4.50 lipped, dowelled four-STL workflow."""
 
 from __future__ import annotations
 
@@ -10,6 +10,7 @@ import FreeCADGui
 
 from Core.Exceptions import PanelOptimizerError
 from Core.DowelPlanner import DowelPlanner
+from Core.LipBuilder import LipBuilder, LipParameters
 from Core.MacroPartExtractor import MacroPartExtractor
 from Core.MacroSplitCore import MacroGrooveParameters, MacroSplitCore
 from Core.MeshPatchRebuilder import build_macro_mesh_parts, export_mesh_parts
@@ -43,7 +44,7 @@ class PanelOptimizerSplitPanelCommand:
         return {
             "Pixmap": icon_path,
             "MenuText": "Split Panel",
-            "ToolTip": "Apply macro grooves, create four parts, and export STL",
+            "ToolTip": "Create four grooved, dowelled, lipped parts and export STL",
         }
 
     def IsActive(self):
@@ -51,7 +52,7 @@ class PanelOptimizerSplitPanelCommand:
         return FreeCAD.ActiveDocument is not None
 
     def Activated(self):
-        """Run V4.30 seams, V4.40 dowels, V4.26 mesh, and four-STL export."""
+        """Run V4.30 seams, V4.40 dowels, V4.50 lips, and four-STL export."""
         document = FreeCAD.ActiveDocument
         if document is None:
             self._error("PanelOptimizer: no active document.")
@@ -92,7 +93,15 @@ class PanelOptimizerSplitPanelCommand:
                     "No seam candidate produced exactly four parts."
                 )
             dowel_application = DowelPlanner().apply(macro_result)
-            macro_result = dowel_application.macro_result
+            lip_application = LipBuilder(
+                LipParameters(
+                    groove_top_width_mm=self._parameters.top_width_mm,
+                )
+            ).apply(
+                dowel_application.macro_result,
+                dowel_cutters=dowel_application.cutters,
+            )
+            macro_result = lip_application.macro_result
             mesh_parts = build_macro_mesh_parts(macro_result)
             extraction = MacroPartExtractor().extract(
                 macro_result,
@@ -113,6 +122,7 @@ class PanelOptimizerSplitPanelCommand:
                 document,
                 dowel_application.cutters,
             )
+            self._write_lip_preview(document, lip_application.preview_shape)
             FreeCAD.Console.PrintMessage(
                 "PanelOptimizer\n"
                 f"Source: {source_object.Name}\n"
@@ -132,6 +142,16 @@ class PanelOptimizerSplitPanelCommand:
                 FreeCAD.Console.PrintMessage(
                     f"{branch.branch_id}: "
                     f"{len(branch.accepted_dowel_ids)} dowels\n"
+                )
+            for report in lip_application.reports:
+                FreeCAD.Console.PrintMessage(
+                    f"{report.name} lips: {report.total_length_mm:.3f} mm, "
+                    f"+{report.volume_added_mm3:.3f} mm^3, "
+                    f"segments {report.segment_count}, trimmed "
+                    f"{report.trimmed_segment_count}, rejected "
+                    f"{report.rejected_segment_count}, dimensions "
+                    f"{report.dimensions_before_mm} -> "
+                    f"{report.dimensions_after_mm}\n"
                 )
             for part in mesh_parts:
                 status = "watertight - OK" if part.is_printable else "EXCEEDS LIMIT"
@@ -194,6 +214,14 @@ class PanelOptimizerSplitPanelCommand:
                 raise PanelOptimizerError(
                     f"Existing object '{name}' is not an owned seam preview."
                 )
+        lips = document.getObject("PanelOptimizer_Lips")
+        if lips is not None and (
+            "PanelOptimizerRole" not in tuple(lips.PropertiesList)
+            or lips.PanelOptimizerRole != "PanelOptimizer.LipPreview.v4"
+        ):
+            raise PanelOptimizerError(
+                "Existing object 'PanelOptimizer_Lips' is not an owned lip preview."
+            )
         dowels = document.getObject("PanelOptimizer_Dowels")
         if dowels is not None and (
             "PanelOptimizerRole" not in tuple(dowels.PropertiesList)
@@ -271,6 +299,36 @@ class PanelOptimizerSplitPanelCommand:
         if view is not None:
             view.ShapeColor = (0.95, 0.65, 0.10)
             view.Transparency = 65
+        document.recompute()
+        return output
+
+    @staticmethod
+    def _write_lip_preview(document, preview_shape) -> object:
+        """Create or update the owned lightweight V4.50 lip compound."""
+        name = "PanelOptimizer_Lips"
+        output = document.getObject(name)
+        if output is None:
+            output = document.addObject("Part::Feature", name)
+            output.addProperty(
+                "App::PropertyString",
+                "PanelOptimizerRole",
+                "PanelOptimizer",
+            )
+            output.PanelOptimizerRole = "PanelOptimizer.LipPreview.v4"
+            output.setEditorMode("PanelOptimizerRole", 1)
+        elif (
+            "PanelOptimizerRole" not in tuple(output.PropertiesList)
+            or output.PanelOptimizerRole != "PanelOptimizer.LipPreview.v4"
+        ):
+            raise PanelOptimizerError(
+                f"Existing object '{name}' is not an owned lip preview."
+            )
+        output.Shape = preview_shape.copy()
+        output.Label = name
+        view = getattr(output, "ViewObject", None)
+        if view is not None:
+            view.ShapeColor = (0.20, 0.75, 0.95)
+            view.Transparency = 25
         document.recompute()
         return output
 

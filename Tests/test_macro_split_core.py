@@ -171,7 +171,7 @@ class MacroSplitCoreTests(unittest.TestCase):
         )
 
     def test_workbench_command_creates_four_parts_without_analysis(self):
-        """V4.21 command writes four direct full-depth-cut solids."""
+        """Command writes four lipped parts and all lightweight previews."""
         import FreeCAD
         from Commands.SplitPanelCommand import PanelOptimizerSplitPanelCommand
 
@@ -204,6 +204,13 @@ class MacroSplitCoreTests(unittest.TestCase):
                 document.getObject("PanelOptimizer_HorizontalSeam")
             )
             self.assertIsNotNone(document.getObject("PanelOptimizer_Dowels"))
+            lips = document.getObject("PanelOptimizer_Lips")
+            self.assertIsNotNone(lips)
+            self.assertEqual(
+                lips.PanelOptimizerRole,
+                "PanelOptimizer.LipPreview.v4",
+            )
+            self.assertGreater(float(lips.Shape.Volume), 0.0)
             self.assertEqual(self._metrics(source_object.Shape), before)
         finally:
             FreeCAD.closeDocument(document.Name)

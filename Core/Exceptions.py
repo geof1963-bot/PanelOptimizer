@@ -126,6 +126,11 @@ class DowelPlanningError(JoineryError):
     pass
 
 
+class LipBuildError(JoineryError):
+    """Raised when V4.50 lip geometry cannot be built safely."""
+    pass
+
+
 class ExportError(PanelOptimizerError):
     """Export related error."""
     pass
