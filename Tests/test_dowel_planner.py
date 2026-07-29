@@ -53,43 +53,42 @@ class DowelPlannerTests(unittest.TestCase):
         self.assertEqual(settings.DOWEL_CENTER_EXCLUSION_MM, 20.0)
         self.assertEqual(settings.DOWEL_MIN_SPACING_MM, 60.0)
         self.assertEqual(settings.DOWEL_MAX_UNSUPPORTED_SPAN_MM, 110.0)
-        self.assertEqual(settings.DOWELS_TARGET_PER_BRANCH, 3)
-        self.assertEqual(settings.DOWELS_MIN_PER_BRANCH, 2)
+        self.assertEqual(settings.DOWELS_TARGET_PER_BRANCH, 4)
+        self.assertEqual(settings.DOWELS_MIN_PER_BRANCH, 3)
         self.assertEqual(settings.DOWELS_MAX_PER_BRANCH, 4)
 
-    def test_unsupported_third_dowel_uses_well_spaced_pair(self):
+    def test_unsupported_fourth_dowel_uses_three_dowel_fallback(self):
         source = Part.makeBox(300.0, 300.0, 8.0)
         macro = self._macro(source)
         first = DowelPlanner().plan(macro)
         second = DowelPlanner().plan(macro)
         self.assertEqual(first, second)
-        self.assertEqual(len(first.dowels), 8)
+        self.assertEqual(len(first.dowels), 12)
         self.assertEqual(
             tuple(len(branch.accepted_dowel_ids) for branch in first.branches),
-            (2, 2, 2, 2),
+            (3, 3, 3, 3),
         )
-        self.assertTrue(all(branch.used_two_dowel_fallback for branch in first.branches))
-        self.assertTrue(all(min(branch.spacing_mm) >= 60.0 for branch in first.branches))
+        self.assertTrue(all(not branch.degraded_two_dowel for branch in first.branches))
         with self.assertRaises(FrozenInstanceError):
             first.dowels[0].status = "changed"
 
     def test_long_branches_use_balanced_coverage_without_clustering(self):
         plan = DowelPlanner().plan(self._macro(Part.makeBox(594.0, 594.0, 8.0)))
-        self.assertEqual(len(plan.dowels), 12)
+        self.assertEqual(len(plan.dowels), 16)
         for branch in plan.branches:
-            self.assertEqual(branch.target_fractions, (0.25, 0.50, 0.75))
+            self.assertEqual(branch.target_fractions, (0.20, 0.40, 0.60, 0.80))
             self.assertFalse(branch.used_two_dowel_fallback)
-            self.assertEqual(len(branch.accepted_dowel_ids), 3)
+            self.assertEqual(len(branch.accepted_dowel_ids), 4)
             self.assertTrue(all(value >= 60.0 for value in branch.spacing_mm))
             self.assertGreater(branch.safe_candidate_count, 3)
             self.assertEqual(branch.sampled_point_count, branch.safe_candidate_count)
             self.assertEqual(branch.cheap_candidate_count, branch.sampled_point_count)
-            self.assertLessEqual(branch.exact_validation_count, 3)
+            self.assertLessEqual(branch.exact_validation_count, 4)
             self.assertLessEqual(branch.largest_unsupported_span_mm, 110.0)
             self.assertTrue(branch.coverage_target_achieved)
             self.assertFalse(branch.spacing_exception)
 
-    def test_four_dowels_are_used_only_when_three_cannot_cover_branch(self):
+    def test_four_dowels_are_preferred_without_exceeding_branch_maximum(self):
         long_plan = DowelPlanner().plan(
             self._macro(Part.makeBox(1000.0, 1000.0, 8.0))
         )
@@ -102,9 +101,7 @@ class DowelPlannerTests(unittest.TestCase):
         ordinary = DowelPlanner().plan(
             self._macro(Part.makeBox(594.0, 594.0, 8.0))
         )
-        self.assertTrue(
-            all(len(branch.accepted_dowel_ids) == 3 for branch in ordinary.branches)
-        )
+        self.assertTrue(all(len(branch.accepted_dowel_ids) == 4 for branch in ordinary.branches))
 
     def test_safe_pool_is_independent_of_selected_spacing(self):
         plan = DowelPlanner().plan(self._macro(Part.makeBox(300.0, 300.0, 8.0)))
@@ -112,8 +109,9 @@ class DowelPlannerTests(unittest.TestCase):
             self.assertGreater(
                 branch.safe_candidate_count, len(branch.accepted_dowel_ids)
             )
-            self.assertEqual(len(branch.accepted_dowel_ids), 2)
-            self.assertGreaterEqual(branch.spacing_mm[0], 60.0)
+            self.assertEqual(len(branch.accepted_dowel_ids), 3)
+            self.assertFalse(branch.degraded_two_dowel)
+            self.assertTrue(branch.spacing_exception)
 
     def test_v440_real_branch_evidence_window_is_scanned(self):
         planner = DowelPlanner()
@@ -142,7 +140,9 @@ class DowelPlannerTests(unittest.TestCase):
         self.assertGreater(sampled, len(candidates))
         self.assertIn(spacing, (5.0, 2.5))
         selected, _targets = planner._select_safe_subset(candidates, interval)
-        self.assertEqual(len(selected), 2)
+        self.assertEqual(len(selected), 3)
+        degraded, _targets = planner._select_safe_subset(candidates[:2], interval)
+        self.assertEqual(len(degraded), 2)
 
     def test_exact_brep_validation_runs_only_on_selected_shortlist(self):
         planner = DowelPlanner()
@@ -156,7 +156,7 @@ class DowelPlannerTests(unittest.TestCase):
 
         with patch.object(planner, "_exact_candidate_reason", side_effect=counted):
             plan = planner.plan(macro)
-        self.assertEqual(len(calls), 12)
+        self.assertEqual(len(calls), 16)
         self.assertEqual(
             len(calls), sum(branch.exact_validation_count for branch in plan.branches)
         )
@@ -186,10 +186,10 @@ class DowelPlannerTests(unittest.TestCase):
         self.assertEqual(
             tuple((round(item.center_xyz_mm[0], 6), round(item.center_xyz_mm[1], 6)) for item in plan.dowels),
             (
-                (297.0, 80.0), (297.0, 145.0), (297.0, 210.0),
-                (297.0, 382.0), (297.0, 447.0), (297.0, 512.0),
-                (80.0, 297.0), (145.0, 297.0), (210.0, 297.0),
-                (382.0, 297.0), (447.0, 297.0), (512.0, 297.0),
+                (297.0, 60.0), (297.0, 120.0), (297.0, 180.0), (297.0, 240.0),
+                (297.0, 357.0), (297.0, 417.0), (297.0, 477.0), (297.0, 537.0),
+                (60.0, 297.0), (120.0, 297.0), (180.0, 297.0), (240.0, 297.0),
+                (357.0, 297.0), (417.0, 297.0), (477.0, 297.0), (537.0, 297.0),
             ),
         )
 
@@ -199,11 +199,12 @@ class DowelPlannerTests(unittest.TestCase):
             (50.0, 55.0, 45.0, 60.0, 40.0, 65.0, 35.0),
         )
 
-    def test_constrained_branches_accept_minimum_two(self):
+    def test_constrained_branches_accept_normal_minimum_three(self):
         plan = DowelPlanner().plan(self._macro(Part.makeBox(100.0, 100.0, 8.0)))
-        self.assertEqual(len(plan.dowels), 8)
-        self.assertTrue(all(len(branch.accepted_dowel_ids) == 2 for branch in plan.branches))
-        self.assertTrue(all(branch.safe_candidate_count >= 2 for branch in plan.branches))
+        self.assertEqual(len(plan.dowels), 12)
+        self.assertTrue(all(len(branch.accepted_dowel_ids) == 3 for branch in plan.branches))
+        self.assertTrue(all(branch.safe_candidate_count >= 3 for branch in plan.branches))
+        self.assertTrue(all(branch.spacing_exception for branch in plan.branches))
         self.assertTrue(
             all(not branch.minimum_spacing_achievable for branch in plan.branches)
         )

@@ -49,8 +49,8 @@ class JoinerySettings:
     DOWEL_CENTER_EXCLUSION_MM: float = 20.0
     DOWEL_MIN_SPACING_MM: float = 60.0
     DOWEL_MAX_UNSUPPORTED_SPAN_MM: float = 110.0
-    DOWELS_TARGET_PER_BRANCH: int = 3
-    DOWELS_MIN_PER_BRANCH: int = 2
+    DOWELS_TARGET_PER_BRANCH: int = 4
+    DOWELS_MIN_PER_BRANCH: int = 3
     DOWELS_MAX_PER_BRANCH: int = 4
 
 
@@ -86,7 +86,7 @@ class SplitSettings:
     NUMBER_OF_SOLUTIONS: int = 5
 
     # V4.30 lightweight top-view seam-path geometry.
-    SEAM_SEARCH_CORRIDOR_MM: float = 30.0
+    SEAM_SEARCH_CORRIDOR_MM: float = 50.0
     SEAM_CENTER_EXCLUSION_MM: float = 12.0
     SEAM_MIN_FEATURE_SIZE_MM: float = 8.0
     SEAM_BOUNDARY_DEFLECTION_MM: float = 2.0
@@ -95,7 +95,7 @@ class SplitSettings:
     SEAM_MAX_ARTIFICIAL_TURN_DEG: float = 30.0
     SEAM_APPROACH_LENGTH_MM: float = 5.0
     SEAM_HOLE_CLEARANCE_MM: float = 0.10
-    SEAM_MAX_FEATURES: int = 1
+    SEAM_MAX_FEATURES: int = 3
 
 
 @dataclass(frozen=True)

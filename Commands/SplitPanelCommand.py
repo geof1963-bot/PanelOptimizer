@@ -163,7 +163,9 @@ class PanelOptimizerSplitPanelCommand:
                     f"{path.segment_count_after_cleanup}, transitions "
                     f"{path.smoothing_transition_count}, artificial turn "
                     f"{path.maximum_artificial_turn_before_deg:.2f} -> "
-                    f"{path.maximum_artificial_turn_after_deg:.2f} deg\n"
+                    f"{path.maximum_artificial_turn_after_deg:.2f} deg, contour "
+                    f"{path.contour_following_length_mm:.3f} mm "
+                    f"({path.contour_following_ratio:.1%})\n"
                 )
                 for report in path.hole_offset_reports:
                     FreeCAD.Console.PrintMessage(
@@ -201,7 +203,8 @@ class PanelOptimizerSplitPanelCommand:
                     f"{branch.unsupported_spans_mm}, largest "
                     f"{branch.largest_unsupported_span_mm:.3f} mm, "
                     f"coverage {branch.coverage_target_achieved}, spacing "
-                    f"exception {branch.spacing_exception}\n"
+                    f"exception {branch.spacing_exception}, degraded two-dowel "
+                    f"{branch.degraded_two_dowel}\n"
                 )
             for report in lip_application.reports:
                 FreeCAD.Console.PrintMessage(

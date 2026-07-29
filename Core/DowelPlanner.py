@@ -110,6 +110,7 @@ class SeamBranchPlan:
     largest_unsupported_span_mm: float = 0.0
     coverage_target_achieved: bool = False
     spacing_exception: bool = False
+    degraded_two_dowel: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -174,7 +175,9 @@ class DowelPlanner:
                 branch, bounds, _seam_intersection(macro_result.seam_plan)
             )
             usable_length = usable_interval[1] - usable_interval[0]
-            requested_targets = _TARGET_FRACTIONS[: self._parameters.target_per_branch]
+            requested_targets = _even_fractions(
+                self._parameters.target_per_branch
+            )
             candidates, rejections, sampled_count, sampling_interval = (
                 self._safe_candidate_pool(
                     usable_interval,
@@ -239,7 +242,7 @@ class DowelPlanner:
                 self._validated_cutters[
                     self._cutter_cache_key(center, axis)
                 ] = cutter
-            if len(branch_dowels) < self._parameters.minimum_per_branch:
+            if len(branch_dowels) < 2:
                 reasons = sorted({item.reason for item in rejections})
                 raise DowelPlanningError(
                     f"Branch '{branch.branch_id}' has {len(candidates)} safe "
@@ -300,6 +303,7 @@ class DowelPlanner:
                         < self._parameters.minimum_spacing_mm
                         - _COORDINATE_TOLERANCE_MM
                     ),
+                    degraded_two_dowel=len(branch_dowels) == 2,
                 )
             )
         return DowelPlan(tuple(accepted), tuple(branch_results))
@@ -416,7 +420,7 @@ class DowelPlanner:
         remaining = list(candidates)
         exact_results = {}
         rejections = []
-        while len(remaining) >= self._parameters.minimum_per_branch:
+        while len(remaining) >= 2:
             selected, targets = self._select_safe_subset(tuple(remaining), interval)
             if not selected:
                 break
@@ -454,43 +458,33 @@ class DowelPlanner:
 
     def _select_safe_subset(self, candidates, interval):
         """Choose the smallest useful 2-4 layout by unsupported branch span."""
-        if len(candidates) < self._parameters.minimum_per_branch:
+        if len(candidates) < 2:
             return (), ()
-        preferred = {}
-        for count in range(
-            self._parameters.minimum_per_branch,
-            min(self._parameters.maximum_per_branch, len(candidates)) + 1,
-        ):
-            preferred[count] = self._best_coverage_subset(
-                candidates, count, self._parameters.minimum_spacing_mm, interval
+        if len(candidates) >= 4:
+            four = self._best_coverage_subset(
+                candidates, 4, self._parameters.minimum_spacing_mm, interval
             )
-        three = preferred.get(3, ())
-        if three:
-            if _largest_candidate_gap(three, interval) <= (
-                self._parameters.maximum_unsupported_span_mm
-                + _COORDINATE_TOLERANCE_MM
-            ):
-                return three, _even_fractions(3)
-            four = preferred.get(4, ())
-            if four and _largest_candidate_gap(four, interval) < (
-                _largest_candidate_gap(three, interval)
-                - _COORDINATE_TOLERANCE_MM
-            ):
+            if four:
                 return four, _even_fractions(4)
-            return three, _even_fractions(3)
-        pair = preferred.get(2, ())
-        if pair and _largest_candidate_gap(pair, interval) <= (
-            self._parameters.maximum_unsupported_span_mm
-            + _COORDINATE_TOLERANCE_MM
-        ):
-            return pair, _even_fractions(2)
-        if pair:
-            relaxed = self._best_relaxed_coverage(candidates, interval)
-            if relaxed and _largest_candidate_gap(relaxed, interval) < (
-                _largest_candidate_gap(pair, interval) - _COORDINATE_TOLERANCE_MM
-            ):
-                return relaxed, _even_fractions(len(relaxed))
-            return pair, _even_fractions(2)
+            four_relaxed = self._best_coverage_subset(
+                candidates,
+                4,
+                self._parameters.minimum_spacing_mm * 0.75,
+                interval,
+            )
+            if four_relaxed:
+                return four_relaxed, _even_fractions(4)
+        if len(candidates) >= 3:
+            three = self._best_coverage_subset(
+                candidates, 3, self._parameters.minimum_spacing_mm, interval
+            )
+            if three:
+                return three, _even_fractions(3)
+            three_relaxed = self._best_coverage_subset(
+                candidates, 3, 0.0, interval
+            )
+            if three_relaxed:
+                return three_relaxed, _even_fractions(3)
         fallback = self._best_coverage_subset(candidates, 2, 0.0, interval)
         return fallback, _even_fractions(2)
 

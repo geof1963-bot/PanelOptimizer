@@ -22,6 +22,7 @@ from Core.SinuousSeamPath import (
     _clean_open_path,
     _material_side_cutter_envelope_mm,
     _point_closed_polyline_distance,
+    _self_intersects,
 )
 
 
@@ -141,13 +142,76 @@ class SinuousSeamPathTests(unittest.TestCase):
         first = finder.generate(source, 2.0, -3.0)
         second = finder.generate(source, 2.0, -3.0)
         self.assertEqual(first, second)
-        self.assertLessEqual(len(first.vertical.followed_feature_ids), 2)
-        self.assertLessEqual(len(first.horizontal.followed_feature_ids), 2)
+        self.assertLessEqual(len(first.vertical.followed_feature_ids), 3)
+        self.assertLessEqual(len(first.horizontal.followed_feature_ids), 3)
         self.assertEqual(first.vertical.points[0].y_mm, 0.0)
         self.assertEqual(first.vertical.points[-1].y_mm, 100.0)
         self.assertEqual(first.horizontal.points[0].x_mm, 0.0)
         self.assertEqual(first.horizontal.points[-1].x_mm, 100.0)
         self.assertEqual(first.intersection_count, 1)
+
+    def test_vertical_route_follows_two_holes_without_backtracking(self):
+        source = Part.makeBox(300.0, 300.0, 8.0)
+        for y_value in (50.0, 250.0):
+            source = source.cut(
+                Part.makeCylinder(8.0, 8.0, Vector(152.0, y_value, 0.0))
+            )
+        plan = SinuousSeamPathFinder().generate(source)
+        self.assertEqual(len(plan.vertical.followed_feature_ids), 2)
+        self.assertEqual(len(plan.vertical.hole_offset_reports), 2)
+        self.assertTrue(all(
+            first.y_mm < second.y_mm
+            for first, second in zip(plan.vertical.points, plan.vertical.points[1:])
+        ))
+        self.assertFalse(_self_intersects(plan.vertical.points))
+        self.assertEqual(plan.intersection_count, 1)
+
+    def test_three_hole_route_improves_contour_following_ratio_and_splits_four(self):
+        def panel(y_values):
+            shape = Part.makeBox(300.0, 300.0, 8.0)
+            for y_value in y_values:
+                shape = shape.cut(
+                    Part.makeCylinder(8.0, 8.0, Vector(152.0, y_value, 0.0))
+                )
+            return shape
+
+        single = SinuousSeamPathFinder().generate(panel((45.0,)))
+        source = panel((45.0, 95.0, 245.0))
+        finder = SinuousSeamPathFinder()
+        multiple = finder.generate(source)
+        self.assertEqual(len(multiple.vertical.followed_feature_ids), 3)
+        self.assertGreater(
+            multiple.vertical.contour_following_length_mm,
+            single.vertical.contour_following_length_mm,
+        )
+        self.assertGreater(
+            multiple.vertical.contour_following_ratio,
+            single.vertical.contour_following_ratio,
+        )
+        self.assertLessEqual(
+            multiple.vertical.maximum_artificial_turn_after_deg,
+            30.0,
+        )
+        valid = tuple(
+            MacroSplitCore().cut(source, seam_plan=candidate)
+            for candidate in finder.candidate_plans(
+                multiple, (0.0, 300.0, 0.0, 300.0)
+            )
+            if MacroSplitCore().cut(source, seam_plan=candidate).solid_count == 4
+        )
+        self.assertTrue(valid)
+        self.assertEqual(valid[0].seam_plan.vertical.followed_feature_ids,
+                         multiple.vertical.followed_feature_ids)
+
+    def test_overlapping_feature_intervals_are_not_forced_into_invalid_chain(self):
+        source = Part.makeBox(300.0, 300.0, 8.0)
+        for y_value in (50.0, 60.0, 70.0):
+            source = source.cut(
+                Part.makeCylinder(7.0, 8.0, Vector(152.0, y_value, 0.0))
+            )
+        plan = SinuousSeamPathFinder().generate(source)
+        self.assertLess(len(plan.vertical.followed_feature_ids), 3)
+        self.assertFalse(_self_intersects(plan.vertical.points))
 
     def test_paths_are_immutable_and_continuous_monotone(self):
         plan = SinuousSeamPathFinder().generate(
