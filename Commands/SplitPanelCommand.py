@@ -157,8 +157,11 @@ class PanelOptimizerSplitPanelCommand:
                     f"usable {branch.usable_length_mm:.3f} mm, targets "
                     f"{branch.target_fractions}, positions {positions}, "
                     f"spacing {branch.spacing_mm}, fallback "
-                    f"{branch.used_two_dowel_fallback}, rejected "
-                    f"{rejection_reasons}\n"
+                    f"{branch.used_two_dowel_fallback}, sampled "
+                    f"{branch.sampled_point_count}, safe "
+                    f"{branch.safe_candidate_count}, selected "
+                    f"{len(branch.accepted_dowel_ids)}, rejected geometry "
+                    f"{branch.rejected_geometry_counts or rejection_reasons}\n"
                 )
             for report in lip_application.reports:
                 FreeCAD.Console.PrintMessage(

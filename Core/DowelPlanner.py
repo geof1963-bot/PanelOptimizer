@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""Deterministic V4.60-distributed dowel planning and transient drilling.
+"""Robust V4.60A full-branch dowel planning and transient drilling.
 
 The planner consumes the already accepted V4.30 four-solid result.  It splits
 the two immutable seam polylines at their sole intersection, samples each of
@@ -11,7 +11,7 @@ lose material.  No FreeCAD object is stored in the immutable plan records.
 from __future__ import annotations
 
 import math
-from itertools import product
+from itertools import combinations
 from dataclasses import dataclass, replace
 
 from .Exceptions import DowelPlanningError
@@ -37,7 +37,7 @@ _RELOCATION_INCREMENT_MM = 5.0
 
 @dataclass(frozen=True, slots=True)
 class DowelParameters:
-    """Validated V4.40 configuration; scalar geometry is in millimetres."""
+    """Validated V4.60A configuration; scalar geometry is in millimetres."""
 
     dowel_diameter_mm: float = Settings.Joinery.DOWEL_DIAMETER_MM
     hole_diameter_mm: float = Settings.Joinery.DOWEL_HOLE_DIAMETER_MM
@@ -96,6 +96,10 @@ class SeamBranchPlan:
     spacing_mm: tuple[float, ...] = ()
     used_two_dowel_fallback: bool = False
     minimum_spacing_achievable: bool = True
+    sampled_point_count: int = 0
+    safe_candidate_count: int = 0
+    rejected_geometry_counts: tuple[tuple[str, int], ...] = ()
+    sampling_interval_mm: float = 5.0
 
 
 @dataclass(frozen=True, slots=True)
@@ -158,138 +162,25 @@ class DowelPlanner:
                 branch, bounds, _seam_intersection(macro_result.seam_plan)
             )
             usable_length = usable_interval[1] - usable_interval[0]
-            rejections = []
-            cache = {}
-            chosen_candidates = ()
-            actual_targets = ()
-            used_fallback = False
             requested_targets = _TARGET_FRACTIONS[: self._parameters.target_per_branch]
-            three_dowel_failure_reason = None
-            if (
+            candidates, rejections, sampled_count, sampling_interval = (
+                self._safe_candidate_pool(
+                    usable_interval,
+                    branch,
+                    macro_result,
+                    solids,
+                    bounds,
+                    z_value,
+                    occupied,
+                )
+            )
+            chosen_candidates, actual_targets = self._select_safe_subset(
+                candidates, usable_interval
+            )
+            used_fallback = (
                 self._parameters.target_per_branch >= 3
-                and usable_length >= 2.0 * self._parameters.minimum_spacing_mm
-            ):
-                pools = tuple(
-                    self._candidate_pool(
-                        fraction,
-                        usable_interval,
-                        branch,
-                        macro_result,
-                        solids,
-                        bounds,
-                        z_value,
-                        occupied,
-                        cache,
-                        rejections,
-                        search_limit=0.0,
-                        maximum_safe_candidates=1,
-                    )
-                    for fraction in requested_targets
-                )
-                chosen_candidates = self._select_distribution(
-                    pools,
-                    self._parameters.minimum_spacing_mm,
-                    prefer_targets=True,
-                )
-                if not chosen_candidates:
-                    pools = tuple(
-                        self._candidate_pool(
-                            fraction,
-                            usable_interval,
-                            branch,
-                            macro_result,
-                            solids,
-                            bounds,
-                            z_value,
-                            occupied,
-                            cache,
-                            rejections,
-                            search_limit=self._parameters.minimum_spacing_mm / 2.0,
-                            maximum_safe_candidates=5,
-                        )
-                        for fraction in requested_targets
-                    )
-                    chosen_candidates = self._select_distribution(
-                        pools,
-                        self._parameters.minimum_spacing_mm,
-                        prefer_targets=True,
-                    )
-                if chosen_candidates:
-                    actual_targets = requested_targets
-                else:
-                    three_dowel_failure_reason = (
-                        "no safe 20/50/80 set meets minimum spacing"
-                    )
-            elif self._parameters.target_per_branch >= 3:
-                three_dowel_failure_reason = (
-                    "usable interval cannot support three minimum-spaced dowels"
-                )
-            if not chosen_candidates:
-                if three_dowel_failure_reason is not None:
-                    midpoint = (usable_interval[0] + usable_interval[1]) / 2.0
-                    point, _ = _point_and_tangent(branch.points, midpoint)
-                    rejections.append(
-                        DowelRejection(
-                            branch.branch_id,
-                            0.50,
-                            (point[0], point[1], z_value),
-                            three_dowel_failure_reason,
-                            branch_distance_mm=midpoint,
-                        )
-                    )
-                used_fallback = self._parameters.target_per_branch >= 3
-                actual_targets = _FALLBACK_FRACTIONS
-                pools = tuple(
-                    self._candidate_pool(
-                        fraction,
-                        usable_interval,
-                        branch,
-                        macro_result,
-                        solids,
-                        bounds,
-                        z_value,
-                        occupied,
-                        cache,
-                        rejections,
-                        search_limit=0.0,
-                        maximum_safe_candidates=1,
-                    )
-                    for fraction in actual_targets
-                )
-                required_spacing = min(
-                    self._parameters.minimum_spacing_mm, usable_length
-                )
-                chosen_candidates = self._select_distribution(
-                    pools, required_spacing, prefer_targets=False
-                )
-                if not chosen_candidates:
-                    pools = tuple(
-                        self._candidate_pool(
-                            fraction,
-                            usable_interval,
-                            branch,
-                            macro_result,
-                            solids,
-                            bounds,
-                            z_value,
-                            occupied,
-                            cache,
-                            rejections,
-                            search_limit=min(
-                                self._parameters.minimum_spacing_mm / 2.0,
-                                usable_length,
-                            ),
-                            maximum_safe_candidates=7,
-                        )
-                        for fraction in actual_targets
-                    )
-                    chosen_candidates = self._select_distribution(
-                        pools, required_spacing, prefer_targets=False
-                    )
-                if not chosen_candidates:
-                    chosen_candidates = self._select_distribution(
-                        pools, 0.0, prefer_targets=False
-                    )
+                and len(chosen_candidates) == 2
+            )
             branch_dowels = []
             for candidate in sorted(
                 chosen_candidates, key=lambda item: item.distance_mm
@@ -318,8 +209,9 @@ class DowelPlanner:
             if len(branch_dowels) < self._parameters.minimum_per_branch:
                 reasons = sorted({item.reason for item in rejections})
                 raise DowelPlanningError(
-                    f"Branch '{branch.branch_id}' has only {len(branch_dowels)} "
-                    f"safe dowels; minimum is {self._parameters.minimum_per_branch}. "
+                    f"Branch '{branch.branch_id}' has {len(candidates)} safe "
+                    f"candidates and only {len(branch_dowels)} selected dowels; "
+                    f"minimum is {self._parameters.minimum_per_branch}. "
                     f"Rejected reasons: {', '.join(reasons)}."
                 )
             branch_results.append(
@@ -344,6 +236,10 @@ class DowelPlanner:
                         >= self._parameters.minimum_spacing_mm
                         - _COORDINATE_TOLERANCE_MM
                     ),
+                    sampled_point_count=sampled_count,
+                    safe_candidate_count=len(candidates),
+                    rejected_geometry_counts=_rejection_counts(rejections),
+                    sampling_interval_mm=sampling_interval,
                 )
             )
         return DowelPlan(tuple(accepted), tuple(branch_results))
@@ -377,9 +273,8 @@ class DowelPlanner:
             )
         return float(min(usable)), float(max(usable))
 
-    def _candidate_pool(
+    def _safe_candidate_pool(
         self,
-        fraction,
         interval,
         branch,
         macro_result,
@@ -387,34 +282,30 @@ class DowelPlanner:
         bounds,
         z_value,
         occupied,
-        cache,
-        rejections,
-        *,
-        search_limit,
-        maximum_safe_candidates,
     ):
-        """Evaluate symmetric nearest-first relocations around one target."""
+        """Scan the complete usable interval and retain every safe candidate."""
         start, end = interval
-        target = start + (end - start) * fraction
+        sampled = list(_sample_distances(start, end, 5.0))
         candidates = []
-        for distance in _candidate_distances(
-            target, start, end, search_limit=search_limit
-        ):
-            key = round(distance, 9)
-            if key not in cache:
-                point, tangent = _point_and_tangent(branch.points, distance)
-                center = (point[0], point[1], z_value)
-                reason = self._candidate_reason(
-                    macro_result,
-                    solids,
-                    bounds,
-                    branch,
-                    center,
-                    tangent,
-                    occupied,
-                )
-                cache[key] = (center, tangent, reason)
-            center, tangent, reason = cache[key]
+        rejections = []
+
+        def evaluate(distance):
+            point, tangent = _point_and_tangent(branch.points, distance)
+            center = (point[0], point[1], z_value)
+            reason = self._candidate_reason(
+                macro_result,
+                solids,
+                bounds,
+                branch,
+                center,
+                tangent,
+                occupied,
+            )
+            fraction = (
+                (distance - start) / (end - start)
+                if end - start > _COORDINATE_TOLERANCE_MM
+                else 0.5
+            )
             if reason is not None:
                 rejections.append(
                     DowelRejection(
@@ -425,21 +316,71 @@ class DowelPlanner:
                         branch_distance_mm=distance,
                     )
                 )
-                continue
+                return
             candidates.append(
-                _Candidate(distance, center, tangent, fraction, target)
+                _Candidate(distance, center, tangent, fraction, distance)
             )
-            if len(candidates) >= maximum_safe_candidates:
-                break
-        return tuple(candidates)
+        for distance in sampled:
+            evaluate(distance)
+        sampling_interval = 5.0
+        if len(candidates) < self._parameters.target_per_branch:
+            refined = tuple(
+                distance
+                for distance in _sample_distances(start, end, 2.5)
+                if all(
+                    abs(distance - prior) > _COORDINATE_TOLERANCE_MM
+                    for prior in sampled
+                )
+            )
+            sampled.extend(refined)
+            for distance in refined:
+                evaluate(distance)
+            sampling_interval = 2.5
+        return (
+            tuple(sorted(candidates, key=lambda item: item.distance_mm)),
+            tuple(rejections),
+            len(sampled),
+            sampling_interval,
+        )
+
+    def _select_safe_subset(self, candidates, interval):
+        """Apply spacing only after geometry-safe candidates are known."""
+        if len(candidates) < self._parameters.minimum_per_branch:
+            return (), ()
+        if self._parameters.target_per_branch >= 3 and len(candidates) >= 3:
+            selected = self._best_subset(
+                candidates,
+                3,
+                self._parameters.minimum_spacing_mm,
+                interval,
+                _TARGET_FRACTIONS,
+            )
+            if selected:
+                return selected, _TARGET_FRACTIONS
+        selected = self._best_subset(
+            candidates,
+            2,
+            self._parameters.minimum_spacing_mm,
+            interval,
+            _FALLBACK_FRACTIONS,
+        )
+        if selected:
+            return selected, _FALLBACK_FRACTIONS
+        return (
+            self._best_subset(
+                candidates, 2, 0.0, interval, _FALLBACK_FRACTIONS
+            ),
+            _FALLBACK_FRACTIONS,
+        )
 
     @staticmethod
-    def _select_distribution(pools, minimum_spacing, *, prefer_targets):
-        """Choose one candidate per target as a deterministic complete set."""
-        if not pools or any(not pool for pool in pools):
-            return ()
+    def _best_subset(candidates, count, minimum_spacing, interval, ideals):
         ranked = []
-        for candidate_set in product(*pools):
+        ideal_distances = tuple(
+            interval[0] + (interval[1] - interval[0]) * fraction
+            for fraction in ideals
+        )
+        for candidate_set in combinations(candidates, count):
             centers = tuple(item.center_xyz_mm for item in candidate_set)
             pairwise = tuple(
                 math.dist(centers[first][:2], centers[second][:2])
@@ -452,15 +393,11 @@ class DowelPlanner:
             ordered = tuple(sorted(item.distance_mm for item in candidate_set))
             coverage = ordered[-1] - ordered[0] if len(ordered) > 1 else 0.0
             deviation = sum(
-                abs(item.distance_mm - item.target_distance_mm)
-                for item in candidate_set
+                abs(item.distance_mm - ideal)
+                for item, ideal in zip(candidate_set, ideal_distances)
             )
             signature = tuple(-round(value, 9) for value in ordered)
-            score = (
-                (-deviation, smallest, coverage, signature)
-                if prefer_targets
-                else (smallest, coverage, -deviation, signature)
-            )
+            score = (smallest, coverage, -deviation, signature)
             ranked.append((score, candidate_set))
         return max(ranked, key=lambda item: item[0])[1] if ranked else ()
 
@@ -626,6 +563,26 @@ class DowelPlanner:
 
 def _polyline_length(points):
     return sum(math.hypot(b[0] - a[0], b[1] - a[1]) for a, b in zip(points, points[1:]))
+
+
+def _sample_distances(start, end, interval):
+    """Return deterministic full-interval samples including both endpoints."""
+    lower, upper, step = float(start), float(end), float(interval)
+    values = [lower]
+    index = 1
+    while lower + index * step < upper - _COORDINATE_TOLERANCE_MM:
+        values.append(lower + index * step)
+        index += 1
+    if upper - values[-1] > _COORDINATE_TOLERANCE_MM:
+        values.append(upper)
+    return tuple(values)
+
+
+def _rejection_counts(rejections):
+    counts = {}
+    for rejection in rejections:
+        counts[rejection.reason] = counts.get(rejection.reason, 0) + 1
+    return tuple(sorted(counts.items()))
 
 
 def _candidate_distances(target, start, end, *, search_limit=None):

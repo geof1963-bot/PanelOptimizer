@@ -6,6 +6,7 @@ from __future__ import annotations
 import math
 import unittest
 from dataclasses import FrozenInstanceError
+from unittest.mock import patch
 
 try:
     import FreeCAD
@@ -78,6 +79,46 @@ class DowelPlannerTests(unittest.TestCase):
             self.assertFalse(branch.used_two_dowel_fallback)
             self.assertEqual(len(branch.accepted_dowel_ids), 3)
             self.assertTrue(all(value >= 60.0 for value in branch.spacing_mm))
+            self.assertGreater(branch.safe_candidate_count, 3)
+            self.assertEqual(branch.sampled_point_count, branch.safe_candidate_count)
+
+    def test_safe_pool_is_independent_of_selected_spacing(self):
+        plan = DowelPlanner().plan(self._macro(Part.makeBox(300.0, 300.0, 8.0)))
+        for branch in plan.branches:
+            self.assertGreater(
+                branch.safe_candidate_count, len(branch.accepted_dowel_ids)
+            )
+            self.assertEqual(len(branch.accepted_dowel_ids), 2)
+            self.assertGreaterEqual(branch.spacing_mm[0], 60.0)
+
+    def test_v440_real_branch_evidence_window_is_scanned(self):
+        planner = DowelPlanner()
+        macro = self._macro(Part.makeBox(594.0, 594.0, 8.0))
+        solids, bounds = planner._ordered_solids_and_bounds(macro)
+        branch = planner._branches(macro)[0]
+        interval = planner._usable_interval(branch, bounds, (297.0, 297.0))
+        original = planner._candidate_reason
+
+        def evidence_window(result, parts, panel_bounds, current, center, tangent, occupied):
+            if 30.0 <= center[1] <= 56.0:
+                return original(
+                    result, parts, panel_bounds, current, center, tangent, occupied
+                )
+            return "fixture exclusion outside V4.40 evidence window"
+
+        with patch.object(
+            planner, "_candidate_reason", side_effect=evidence_window
+        ):
+            candidates, _rejections, sampled, spacing = (
+                planner._safe_candidate_pool(
+                    interval, branch, macro, solids, bounds, 2.5, ()
+                )
+            )
+        self.assertGreaterEqual(len(candidates), 2)
+        self.assertGreater(sampled, len(candidates))
+        self.assertIn(spacing, (5.0, 2.5))
+        selected, _targets = planner._select_safe_subset(candidates, interval)
+        self.assertEqual(len(selected), 2)
 
     def test_relocation_order_is_symmetric_around_target(self):
         self.assertEqual(
@@ -89,6 +130,10 @@ class DowelPlannerTests(unittest.TestCase):
         plan = DowelPlanner().plan(self._macro(Part.makeBox(100.0, 100.0, 8.0)))
         self.assertEqual(len(plan.dowels), 8)
         self.assertTrue(all(len(branch.accepted_dowel_ids) == 2 for branch in plan.branches))
+        self.assertTrue(all(branch.safe_candidate_count >= 2 for branch in plan.branches))
+        self.assertTrue(
+            all(not branch.minimum_spacing_achievable for branch in plan.branches)
+        )
 
     def test_axes_are_horizontal_and_normal_to_local_tangent(self):
         plan = DowelPlanner().plan(self._macro(Part.makeBox(300.0, 300.0, 8.0)))
