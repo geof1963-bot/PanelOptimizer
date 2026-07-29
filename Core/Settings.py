@@ -52,6 +52,7 @@ class JoinerySettings:
     DOWELS_TARGET_PER_BRANCH: int = 4
     DOWELS_MIN_PER_BRANCH: int = 3
     DOWELS_MAX_PER_BRANCH: int = 4
+    DOWEL_MIN_USEFUL_DEPTH_PER_SIDE_MM: float = 6.0
 
 
 @dataclass(frozen=True)
@@ -98,6 +99,8 @@ class SplitSettings:
     MAX_FOLLOWED_FEATURES_PER_SEAM: int = 8
     MAX_SEAM_VARIANTS_PER_AXIS: int = 12
     SEAM_MIN_FOLLOW_LENGTH_MM: float = 15.0
+    SEAM_BEAM_WIDTH: int = 6
+    SEAM_COVERAGE_EPSILON_MM: float = 1.0
 
 
 @dataclass(frozen=True)

@@ -51,6 +51,9 @@ class DowelParameters:
     target_per_branch: int = Settings.Joinery.DOWELS_TARGET_PER_BRANCH
     minimum_per_branch: int = Settings.Joinery.DOWELS_MIN_PER_BRANCH
     maximum_per_branch: int = Settings.Joinery.DOWELS_MAX_PER_BRANCH
+    minimum_useful_depth_per_side_mm: float = (
+        Settings.Joinery.DOWEL_MIN_USEFUL_DEPTH_PER_SIDE_MM
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -68,6 +71,9 @@ class DowelPosition:
     status: str = "accepted"
     branch_distance_mm: float = 0.0
     target_fraction: float = 0.0
+    useful_depth_part_a_mm: float = 0.0
+    useful_depth_part_b_mm: float = 0.0
+    bore_exits_artistic_opening: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -217,6 +223,13 @@ class DowelPlanner:
                 dowel_id = (
                     f"dowel:{branch.branch_id}:{len(branch_dowels) + 1:02d}"
                 )
+                exact_reason, cutter, useful_depths, opening_breakout = exact_results[
+                    round(candidate.distance_mm, 9)
+                ]
+                if exact_reason is not None:
+                    raise DowelPlanningError(
+                        f"Selected candidate for {dowel_id} was not exact-safe."
+                    )
                 record = DowelPosition(
                     dowel_id=dowel_id,
                     seam_branch=branch.branch_id,
@@ -228,17 +241,13 @@ class DowelPlanner:
                     total_hole_length_mm=self._parameters.length_mm,
                     branch_distance_mm=candidate.distance_mm,
                     target_fraction=candidate.target_fraction,
+                    useful_depth_part_a_mm=useful_depths[0],
+                    useful_depth_part_b_mm=useful_depths[1],
+                    bore_exits_artistic_opening=opening_breakout,
                 )
                 branch_dowels.append(record)
                 accepted.append(record)
                 occupied.append(center[:2])
-                exact_reason, cutter = exact_results[
-                    round(candidate.distance_mm, 9)
-                ]
-                if exact_reason is not None:
-                    raise DowelPlanningError(
-                        f"Selected candidate for {dowel_id} was not exact-safe."
-                    )
                 self._validated_cutters[
                     self._cutter_cache_key(center, axis)
                 ] = cutter
@@ -276,7 +285,9 @@ class DowelPlanner:
                     # Cheap filtering is conservative; subtract any false
                     # positives discovered while exact-checking the shortlist.
                     safe_candidate_count=cheap_candidate_count - sum(
-                        reason is not None for reason, _cutter in exact_results.values()
+                        reason is not None
+                        for reason, _cutter, _depths, _breakout
+                        in exact_results.values()
                     ),
                     rejected_geometry_counts=_rejection_counts(rejections),
                     sampling_interval_mm=sampling_interval,
@@ -435,7 +446,7 @@ class DowelPlanner:
                         candidate.center_xyz_mm,
                         candidate.tangent_xy,
                     )
-                reason, _cutter = exact_results[key]
+                reason, _cutter, _depths, _breakout = exact_results[key]
                 if reason is not None:
                     failed_distances.add(key)
                     rejections.append(
@@ -638,7 +649,7 @@ class DowelPlanner:
         )
         if reason is not None:
             return reason
-        reason, _cutter = self._exact_candidate_reason(
+        reason, _cutter, _depths, _breakout = self._exact_candidate_reason(
             macro_result, solids, branch, center, tangent
         )
         return reason
@@ -667,11 +678,8 @@ class DowelPlanner:
         half = self._parameters.length_mm / 2.0
         first = (x_value - axis[0] * half, y_value - axis[1] * half)
         second = (x_value + axis[0] * half, y_value + axis[1] * half)
-        clearance = self._parameters.hole_diameter_mm / 2.0 + self._parameters.material_margin_mm
-        for feature in macro_result.seam_plan.features:
-            points = tuple((point.x_mm, point.y_mm) for point in feature.points)
-            if _segment_polyline_distance(first, second, points) < clearance:
-                return f"opening margin ({feature.feature_id})"
+        # Artistic-opening breakout is allowed after both mating parts provide
+        # the configured useful engagement. Exact validation records it.
 
         # A bounding-box miss proves insufficient local material and is safe to
         # reject.  Overlap is deliberately inconclusive and left to exact BRep
@@ -705,32 +713,42 @@ class DowelPlanner:
         axis = _canonical_normal(tangent, branch.branch_id)
         cutter = self._cutter(center, axis)
         expected = set(branch.intended_indices)
-        half_volume = math.pi * (self._parameters.hole_diameter_mm / 2.0) ** 2 * (self._parameters.length_mm / 2.0)
-        total_removed = 0.0
+        section_area = math.pi * (self._parameters.hole_diameter_mm / 2.0) ** 2
+        useful_depths = {}
         for index, solid in enumerate(solids):
             try:
                 cut_shape = solid.cut(cutter)
                 removed = float(solid.Volume) - float(cut_shape.Volume)
             except Exception:
-                return "local boolean validation failed", cutter
+                return "local boolean validation failed", cutter, (0.0, 0.0), False
             tolerance = volume_tolerance_mm3(float(solid.Volume))
-            total_removed += max(0.0, removed)
-            if index in expected and removed < half_volume * 0.55:
-                return f"insufficient material in Part_{index + 1}", cutter
+            if index in expected:
+                useful_depths[index] = max(0.0, removed / section_area)
+                if useful_depths[index] < (
+                    self._parameters.minimum_useful_depth_per_side_mm
+                    - _COORDINATE_TOLERANCE_MM
+                ):
+                    return (
+                        f"insufficient useful depth in Part_{index + 1}",
+                        cutter,
+                        tuple(
+                            useful_depths.get(item, 0.0)
+                            for item in branch.intended_indices
+                        ),
+                        True,
+                    )
             if index not in expected and removed > tolerance:
-                return f"would drill Part_{index + 1}", cutter
-        expected_material = (
-            math.pi
-            * (self._parameters.hole_diameter_mm / 2.0) ** 2
-            * (self._parameters.length_mm - macro_result.separation_width_mm)
+                return (
+                    f"would drill Part_{index + 1}", cutter, (0.0, 0.0), False
+                )
+        ordered_depths = tuple(
+            useful_depths.get(item, 0.0) for item in branch.intended_indices
         )
-        material_tolerance = max(
-            volume_tolerance_mm3(expected_material),
-            expected_material * 1.0e-4,
+        expected_total_depth = (
+            self._parameters.length_mm - macro_result.separation_width_mm
         )
-        if total_removed < expected_material - material_tolerance:
-            return "cutter intersects existing void", cutter
-        return None, cutter
+        breakout = sum(ordered_depths) < expected_total_depth - 0.05
+        return None, cutter, ordered_depths, breakout
 
     @staticmethod
     def _cutter_cache_key(center, axis):
@@ -788,6 +806,7 @@ class DowelPlanner:
             parameters.edge_margin_mm, parameters.material_margin_mm,
             parameters.center_exclusion_mm, parameters.minimum_spacing_mm,
             parameters.maximum_unsupported_span_mm,
+            parameters.minimum_useful_depth_per_side_mm,
         )
         if not all(math.isfinite(float(value)) and float(value) > 0.0 for value in values):
             raise DowelPlanningError("Dowel geometry settings must be finite and positive.")

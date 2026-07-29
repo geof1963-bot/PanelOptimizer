@@ -11,6 +11,7 @@ line.  Unsupported or ambiguous boundaries are simply ignored.
 from __future__ import annotations
 
 import math
+import time
 from dataclasses import dataclass
 
 from .Exceptions import SplitOperationError
@@ -114,6 +115,8 @@ class SinuousSeamParameters:
     minimum_follow_length_mm: float = Settings.Split.SEAM_MIN_FOLLOW_LENGTH_MM
     maximum_features_per_seam: int = Settings.Split.MAX_FOLLOWED_FEATURES_PER_SEAM
     maximum_variants_per_axis: int = Settings.Split.MAX_SEAM_VARIANTS_PER_AXIS
+    beam_width: int = Settings.Split.SEAM_BEAM_WIDTH
+    coverage_epsilon_mm: float = Settings.Split.SEAM_COVERAGE_EPSILON_MM
 
 
 class SinuousSeamPathFinder:
@@ -126,6 +129,9 @@ class SinuousSeamPathFinder:
     ) -> None:
         self._parameters = self._validated_parameters(parameters)
         self._split_settings = split_settings
+        self._detour_cache = {}
+        self._transition_cache = {}
+        self._diagnostics = {}
 
     def generate(
         self,
@@ -134,6 +140,14 @@ class SinuousSeamPathFinder:
         horizontal_offset: float = 0.0,
     ) -> SinuousSeamPlan:
         """Generate deterministic paths directly from the source top view."""
+        self._detour_cache = {}
+        self._transition_cache = {}
+        self._diagnostics = {
+            "route_candidates_generated": 0,
+            "route_candidates_pruned": 0,
+            "detour_cache_hits": 0,
+            "transition_cache_hits": 0,
+        }
         try:
             bounds = source_shape.BoundBox
             xmin, xmax = float(bounds.XMin), float(bounds.XMax)
@@ -143,7 +157,10 @@ class SinuousSeamPathFinder:
             raise SplitOperationError("Sinuous seam source is unavailable.") from error
         nominal_x = (xmin + xmax) / 2.0 + self._finite(vertical_offset)
         nominal_y = (ymin + ymax) / 2.0 + self._finite(horizontal_offset)
+        started = time.perf_counter()
         features = self._extract_features(source_shape, zmax)
+        self._diagnostics["contour_prep_seconds"] = time.perf_counter() - started
+        started = time.perf_counter()
         vertical = self._build_path(
             "vertical", nominal_x, nominal_y, (xmin, xmax, ymin, ymax), features
         )
@@ -166,7 +183,13 @@ class SinuousSeamPathFinder:
             intersections = _intersection_count(vertical.points, horizontal.points)
         if intersections != 1:
             raise SplitOperationError("Seam paths do not intersect exactly once.")
+        self._diagnostics["initial_route_seconds"] = time.perf_counter() - started
         return SinuousSeamPlan(vertical, horizontal, features, intersections)
+
+    @property
+    def search_diagnostics(self) -> dict[str, float | int]:
+        """Return a copy of bounded per-run seam-search evidence."""
+        return dict(self._diagnostics)
 
     def candidate_plans(
         self,
@@ -174,6 +197,7 @@ class SinuousSeamPathFinder:
         panel_bounds: tuple[float, float, float, float],
     ) -> tuple[SinuousSeamPlan, ...]:
         """Return bounded route combinations ordered by hidden contour length."""
+        started = time.perf_counter()
         verticals = self._path_variants(
             plan.vertical,
             plan.horizontal.nominal_coordinate_mm,
@@ -213,7 +237,55 @@ class SinuousSeamPathFinder:
             if signature not in signatures:
                 signatures.add(signature)
                 unique.append(candidate)
+        self._diagnostics["route_candidates_generated"] = len(unique)
+        self._diagnostics["route_search_seconds"] = time.perf_counter() - started
         return tuple(unique)
+
+    def topology_shortlist(
+        self,
+        plan: SinuousSeamPlan,
+        panel_bounds: tuple[float, float, float, float],
+    ) -> tuple[SinuousSeamPlan, ...]:
+        """Return at most five quality-ranked plans for expensive B-rep checks."""
+        candidates = self.candidate_plans(plan, panel_bounds)
+        if not candidates:
+            return ()
+        best = candidates[0]
+        selected = [best]
+        categories = (
+            lambda item: not item.vertical.followed_feature_ids,
+            lambda item: not item.horizontal.followed_feature_ids,
+            lambda item: (
+                not item.vertical.followed_feature_ids
+                and not item.horizontal.followed_feature_ids
+            ),
+        )
+        for predicate in categories:
+            match = next((item for item in candidates if predicate(item)), None)
+            if match is not None and match not in selected:
+                selected.append(match)
+        best_coverage = (
+            best.vertical.contour_following_length_mm
+            + best.horizontal.contour_following_length_mm
+        )
+        for candidate in candidates[1:]:
+            coverage = (
+                candidate.vertical.contour_following_length_mm
+                + candidate.horizontal.contour_following_length_mm
+            )
+            if (
+                best_coverage - coverage <= self._parameters.coverage_epsilon_mm
+                and candidate not in selected
+            ):
+                selected.append(candidate)
+            if len(selected) >= 5:
+                break
+        shortlist = tuple(selected[:5])
+        self._diagnostics["route_candidates_pruned"] = max(
+            0, len(candidates) - len(shortlist)
+        )
+        self._diagnostics["topology_shortlist_count"] = len(shortlist)
+        return shortlist
 
     def _path_variants(self, primary, center_other, panel_bounds, features):
         """Build a bounded set of cached-feature routes from complex to straight."""
@@ -267,7 +339,10 @@ class SinuousSeamPathFinder:
                 path.maximum_deviation_mm,
                 path.points,
             ),
-        )[: self._parameters.maximum_variants_per_axis])
+        )[: min(
+            self._parameters.maximum_variants_per_axis,
+            self._parameters.beam_width,
+        )])
 
     def _extract_features(
         self, source_shape: object, zmax: float
@@ -388,9 +463,21 @@ class SinuousSeamPathFinder:
         allowed_max = cross_min + configured_limit
         ranked = []
         for feature in features:
-            detour = self._feature_detour(
-                feature, axis, nominal, center_other, allowed_min, allowed_max
+            cache_key = (
+                feature.feature_id, axis, round(nominal, 9),
+                round(center_other, 9), round(allowed_min, 9),
+                round(allowed_max, 9),
             )
+            if cache_key in self._detour_cache:
+                detour = self._detour_cache[cache_key]
+                self._diagnostics["detour_cache_hits"] = (
+                    self._diagnostics.get("detour_cache_hits", 0) + 1
+                )
+            else:
+                detour = self._feature_detour(
+                    feature, axis, nominal, center_other, allowed_min, allowed_max
+                )
+                self._detour_cache[cache_key] = detour
             if detour is not None:
                 boundary_distance, travel_span, interval, chain, report = detour
                 ranked.append(
@@ -671,8 +758,15 @@ class SinuousSeamPathFinder:
         self, first, last, first_tangent, last_tangent, axis
     ) -> tuple[Point2D, ...]:
         """Return a monotone sampled cubic transition excluding its first point."""
+        cache_key = (first, last, first_tangent, last_tangent, axis)
+        if cache_key in self._transition_cache:
+            self._diagnostics["transition_cache_hits"] = (
+                self._diagnostics.get("transition_cache_hits", 0) + 1
+            )
+            return self._transition_cache[cache_key]
         chord = _distance(first, last)
         if chord <= _COORDINATE_TOLERANCE_MM:
+            self._transition_cache[cache_key] = (last,)
             return (last,)
         for tangent_factor in (0.5, 0.35, 0.2, 0.1):
             derivative_scale = chord * tangent_factor
@@ -712,7 +806,9 @@ class SinuousSeamPathFinder:
                 if _strictly_monotone(candidate, axis) and max(turn_angles) <= (
                     self._parameters.maximum_artificial_turn_deg
                 ):
+                    self._transition_cache[cache_key] = candidate[1:]
                     return candidate[1:]
+        self._transition_cache[cache_key] = None
         return None
 
     @staticmethod
@@ -1005,6 +1101,7 @@ class SinuousSeamPathFinder:
             parameters.approach_length_mm,
             parameters.hole_clearance_mm,
             parameters.minimum_follow_length_mm,
+            parameters.coverage_epsilon_mm,
         )
         if any(not math.isfinite(value) or value <= 0.0 for value in numeric):
             raise SplitOperationError("Sinuous seam parameters must be positive.")
@@ -1012,6 +1109,8 @@ class SinuousSeamPathFinder:
             raise SplitOperationError("At least one seam feature must be allowed.")
         if parameters.maximum_variants_per_axis < 1:
             raise SplitOperationError("At least one seam route variant is required.")
+        if parameters.beam_width < 1:
+            raise SplitOperationError("Seam beam width must be positive.")
         return parameters
 
 

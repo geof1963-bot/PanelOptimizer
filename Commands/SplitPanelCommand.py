@@ -80,12 +80,17 @@ class PanelOptimizerSplitPanelCommand:
                 float(bounds.YMin), float(bounds.YMax),
             )
             candidate_plans = tuple(
-                path_finder.candidate_plans(proposed_plan, panel_bounds)
+                path_finder.topology_shortlist(proposed_plan, panel_bounds)
             )
+            seam_diagnostics = path_finder.search_diagnostics
             timings["seams"] = time.perf_counter() - started
             macro_result = None
-            started = time.perf_counter()
+            exact_topology_validations = 0
+            successful_split_seconds = 0.0
+            rejected_topology_seconds = 0.0
             for candidate in candidate_plans:
+                attempt_started = time.perf_counter()
+                exact_topology_validations += 1
                 attempt = MacroSplitCore().cut(
                     source_object.Shape,
                     self._vertical_offset,
@@ -95,8 +100,11 @@ class PanelOptimizerSplitPanelCommand:
                 )
                 if attempt.solid_count == 4:
                     macro_result = attempt
+                    successful_split_seconds = time.perf_counter() - attempt_started
                     break
-            timings["split"] = time.perf_counter() - started
+                rejected_topology_seconds += time.perf_counter() - attempt_started
+            timings["topology_validation"] = rejected_topology_seconds
+            timings["split"] = successful_split_seconds
             if macro_result is None:
                 raise PanelOptimizerError(
                     "No seam candidate produced exactly four parts."
@@ -151,6 +159,15 @@ class PanelOptimizerSplitPanelCommand:
                 f"Cuts: X = {macro_result.cut_x_mm:g}, "
                 f"Y = {macro_result.cut_y_mm:g}\n"
             )
+            FreeCAD.Console.PrintMessage(
+                "Route search: generated "
+                f"{seam_diagnostics.get('route_candidates_generated', 0)}, "
+                f"pruned {seam_diagnostics.get('route_candidates_pruned', 0)}, "
+                f"exact topology validations {exact_topology_validations}, "
+                f"detour cache hits {seam_diagnostics.get('detour_cache_hits', 0)}, "
+                f"transition cache hits "
+                f"{seam_diagnostics.get('transition_cache_hits', 0)}\n"
+            )
             for path in (
                 macro_result.seam_plan.vertical,
                 macro_result.seam_plan.horizontal,
@@ -184,10 +201,22 @@ class PanelOptimizerSplitPanelCommand:
                         f"{'preserved' if report.original_profile_preserved else 'NOT preserved'}\n"
                     )
             for branch in dowel_application.plan.branches:
-                positions = tuple(
-                    dowel.center_xyz_mm
+                selected_dowels = tuple(
+                    dowel
                     for dowel in dowel_application.plan.dowels
                     if dowel.seam_branch == branch.branch_id
+                )
+                positions = tuple(dowel.center_xyz_mm for dowel in selected_dowels)
+                useful_depths = tuple(
+                    (
+                        dowel.useful_depth_part_a_mm,
+                        dowel.useful_depth_part_b_mm,
+                    )
+                    for dowel in selected_dowels
+                )
+                opening_breakouts = tuple(
+                    dowel.bore_exits_artistic_opening
+                    for dowel in selected_dowels
                 )
                 rejection_reasons = tuple(sorted({
                     item.reason for item in branch.rejected_candidates
@@ -196,7 +225,8 @@ class PanelOptimizerSplitPanelCommand:
                     f"{branch.branch_id}: "
                     f"usable {branch.usable_length_mm:.3f} mm, targets "
                     f"{branch.target_fractions}, positions {positions}, "
-                    f"spacing {branch.spacing_mm}, fallback "
+                    f"spacing {branch.spacing_mm}, useful depths "
+                    f"{useful_depths}, opening breakout {opening_breakouts}, fallback "
                     f"{branch.used_two_dowel_fallback}, sampled "
                     f"{branch.sampled_point_count}, safe "
                     f"{branch.safe_candidate_count}, selected "
@@ -418,8 +448,10 @@ class PanelOptimizerSplitPanelCommand:
     def _print_performance(timings) -> None:
         """Print one concise V4.61 stage report in seconds."""
         FreeCAD.Console.PrintMessage(
-            "PanelOptimizer Performance\n"
-            f"Seams: {timings.get('seams', 0.0):.3f} s\n"
+            "PanelOptimizer Performance V4.72\n"
+            f"Contour prep + route search: {timings.get('seams', 0.0):.3f} s\n"
+            f"Topology validation: "
+            f"{timings.get('topology_validation', 0.0):.3f} s\n"
             f"Split: {timings.get('split', 0.0):.3f} s\n"
             f"Dowels plan: {timings.get('dowel_plan', 0.0):.3f} s\n"
             f"Dowels cut: {timings.get('dowel_cut', 0.0):.3f} s\n"

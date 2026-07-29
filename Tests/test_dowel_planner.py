@@ -56,6 +56,7 @@ class DowelPlannerTests(unittest.TestCase):
         self.assertEqual(settings.DOWELS_TARGET_PER_BRANCH, 4)
         self.assertEqual(settings.DOWELS_MIN_PER_BRANCH, 3)
         self.assertEqual(settings.DOWELS_MAX_PER_BRANCH, 4)
+        self.assertEqual(settings.DOWEL_MIN_USEFUL_DEPTH_PER_SIDE_MM, 6.0)
 
     def test_unsupported_fourth_dowel_uses_three_dowel_fallback(self):
         source = Part.makeBox(300.0, 300.0, 8.0)
@@ -263,18 +264,22 @@ class DowelPlannerTests(unittest.TestCase):
             self.assertGreaterEqual(math.hypot(x_value - 150.0, y_value - 150.0), 20.0)
             self.assertGreaterEqual(min(x_value, 300.0 - x_value, y_value, 300.0 - y_value), 15.0)
 
-    def test_nearby_artistic_hole_causes_relocation_or_rejection(self):
+    def test_artistic_opening_breakout_is_informational_after_useful_depth(self):
         source = Part.makeBox(300.0, 300.0, 8.0).cut(
             Part.makeCylinder(10.0, 8.0, Vector(150.0, 37.5, 0.0))
         )
         macro = self._macro(source)
         plan = DowelPlanner().plan(macro)
-        reasons = tuple(
-            rejection.reason
-            for branch in plan.branches
-            for rejection in branch.rejected_candidates
+        breakout = tuple(
+            dowel for dowel in plan.dowels
+            if dowel.bore_exits_artistic_opening
         )
-        self.assertTrue(any(reason.startswith("opening margin") for reason in reasons))
+        self.assertTrue(breakout)
+        self.assertTrue(all(
+            dowel.useful_depth_part_a_mm >= 6.0
+            and dowel.useful_depth_part_b_mm >= 6.0
+            for dowel in breakout
+        ))
         self.assertGreaterEqual(
             len(plan.branches[0].accepted_dowel_ids),
             Settings.Joinery.DOWELS_MIN_PER_BRANCH,

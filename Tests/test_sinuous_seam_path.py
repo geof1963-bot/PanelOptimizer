@@ -53,6 +53,8 @@ class SinuousSeamPathTests(unittest.TestCase):
         self.assertEqual(Settings.Split.MAX_FOLLOWED_FEATURES_PER_SEAM, 8)
         self.assertEqual(Settings.Split.MAX_SEAM_VARIANTS_PER_AXIS, 12)
         self.assertEqual(Settings.Split.SEAM_MIN_FOLLOW_LENGTH_MM, 15.0)
+        self.assertEqual(Settings.Split.SEAM_BEAM_WIDTH, 6)
+        self.assertEqual(Settings.Split.SEAM_COVERAGE_EPSILON_MM, 1.0)
 
     def test_collinear_and_tiny_segments_are_removed(self):
         points = (
@@ -265,6 +267,15 @@ class SinuousSeamPathTests(unittest.TestCase):
         self.assertEqual(len(candidates[0].vertical.followed_feature_ids), 2)
         self.assertEqual(len(candidates[0].horizontal.followed_feature_ids), 2)
         self.assertEqual(candidates[0].intersection_count, 1)
+        shortlist = finder.topology_shortlist(
+            proposed, (0.0, 300.0, 0.0, 300.0)
+        )
+        self.assertLessEqual(len(shortlist), 5)
+        self.assertEqual(shortlist[0], candidates[0])
+        diagnostics = finder.search_diagnostics
+        self.assertGreater(diagnostics["route_candidates_pruned"], 0)
+        self.assertGreater(diagnostics["detour_cache_hits"], 0)
+        self.assertGreater(diagnostics["transition_cache_hits"], 0)
 
     def test_longer_monotone_contour_direction_is_preferred(self):
         points = tuple(Point2D(*point) for point in (
