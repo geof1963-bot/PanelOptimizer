@@ -59,6 +59,12 @@ class HoleOffsetReport:
     clearance_mm: float
     final_offset_mm: float
     minimum_material_side_clearance_mm: float
+    followed_contour_length_mm: float = 0.0
+    direction_used: str = "unknown"
+    minimum_offset_mm: float = 0.0
+    maximum_offset_mm: float = 0.0
+    average_offset_mm: float = 0.0
+    original_profile_preserved: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -105,7 +111,9 @@ class SinuousSeamParameters:
     maximum_artificial_turn_deg: float = Settings.Split.SEAM_MAX_ARTIFICIAL_TURN_DEG
     approach_length_mm: float = Settings.Split.SEAM_APPROACH_LENGTH_MM
     hole_clearance_mm: float = Settings.Split.SEAM_HOLE_CLEARANCE_MM
-    maximum_features_per_seam: int = Settings.Split.SEAM_MAX_FEATURES
+    minimum_follow_length_mm: float = Settings.Split.SEAM_MIN_FOLLOW_LENGTH_MM
+    maximum_features_per_seam: int = Settings.Split.MAX_FOLLOWED_FEATURES_PER_SEAM
+    maximum_variants_per_axis: int = Settings.Split.MAX_SEAM_VARIANTS_PER_AXIS
 
 
 class SinuousSeamPathFinder:
@@ -208,10 +216,17 @@ class SinuousSeamPathFinder:
         return tuple(unique)
 
     def _path_variants(self, primary, center_other, panel_bounds, features):
-        """Build at most five cached-feature routes from complex to straight."""
+        """Build a bounded set of cached-feature routes from complex to straight."""
         axis = primary.axis
-        variants = [primary]
-        followed = set(primary.followed_feature_ids)
+        full = self._build_path(
+            axis,
+            primary.nominal_coordinate_mm,
+            center_other,
+            panel_bounds,
+            features,
+        )
+        variants = [full, primary]
+        followed = set(full.followed_feature_ids)
         for feature_id in sorted(followed):
             subset = tuple(
                 feature for feature in features if feature.feature_id != feature_id
@@ -219,7 +234,7 @@ class SinuousSeamPathFinder:
             variants.append(
                 self._build_path(
                     axis,
-                    primary.nominal_coordinate_mm,
+                    full.nominal_coordinate_mm,
                     center_other,
                     panel_bounds,
                     subset,
@@ -233,7 +248,7 @@ class SinuousSeamPathFinder:
                 variants.append(
                     self._build_path(
                         axis,
-                        primary.nominal_coordinate_mm,
+                        full.nominal_coordinate_mm,
                         center_other,
                         panel_bounds,
                         remaining,
@@ -252,7 +267,7 @@ class SinuousSeamPathFinder:
                 path.maximum_deviation_mm,
                 path.points,
             ),
-        )[:5])
+        )[: self._parameters.maximum_variants_per_axis])
 
     def _extract_features(
         self, source_shape: object, zmax: float
@@ -317,7 +332,7 @@ class SinuousSeamPathFinder:
         return tuple(features)
 
     def _sample_wire(self, wire: object) -> tuple[Point2D, ...]:
-        """Discretize one exact wire deterministically, then simplify it."""
+        """Adaptively sample curved regions and compact nearly straight runs."""
         try:
             values = wire.discretize(
                 Deflection=self._parameters.boundary_deflection_mm
@@ -334,7 +349,23 @@ class SinuousSeamPathFinder:
         if len(points) < 3:
             return ()
         canonical = _canonical_cycle(tuple(points))
-        return _simplify_closed(canonical, self._parameters.boundary_simplification_mm)
+        if _maximum_cycle_turn_deg(canonical) >= 8.0:
+            try:
+                finer = wire.discretize(
+                    Deflection=self._parameters.boundary_deflection_mm / 2.0
+                )
+                dense = _deduplicate(tuple(
+                    Point2D(float(value.x), float(value.y)) for value in finer
+                ))
+                if len(dense) > 1 and _distance(dense[0], dense[-1]) <= _COORDINATE_TOLERANCE_MM:
+                    dense = dense[:-1]
+                if len(dense) >= 3:
+                    canonical = _canonical_cycle(dense)
+            except Exception:
+                pass
+        return _adaptive_simplify_closed(
+            canonical, self._parameters.boundary_simplification_mm
+        )
 
     def _build_path(
         self,
@@ -364,7 +395,7 @@ class SinuousSeamPathFinder:
                 boundary_distance, travel_span, interval, chain, report = detour
                 ranked.append(
                     (
-                        -travel_span,
+                        -report.followed_contour_length_mm,
                         boundary_distance,
                         feature.feature_id,
                         interval,
@@ -375,9 +406,18 @@ class SinuousSeamPathFinder:
                 )
         selected = []
         for item in sorted(ranked):
-            interval = item[3]
+            chain = item[4]
+            chain_interval = (
+                chain[0].y_mm if axis == "vertical" else chain[0].x_mm,
+                chain[-1].y_mm if axis == "vertical" else chain[-1].x_mm,
+            )
             if any(
-                not (interval[1] < chosen[3][0] or interval[0] > chosen[3][1])
+                not (
+                    chain_interval[1]
+                    < (chosen[4][0].y_mm if axis == "vertical" else chosen[4][0].x_mm)
+                    or chain_interval[0]
+                    > (chosen[4][-1].y_mm if axis == "vertical" else chosen[4][-1].x_mm)
+                )
                 for chosen in selected
             ):
                 continue
@@ -385,90 +425,16 @@ class SinuousSeamPathFinder:
             if len(selected) >= self._parameters.maximum_features_per_seam:
                 break
         selected.sort(key=lambda item: item[3][0])
-        raw_points = [self._point(axis, nominal, travel_min)]
-        smoothed_points = [self._point(axis, nominal, travel_min)]
-        followed = []
-        followed_bounds = []
-        offset_reports = []
-        contour_following_length = 0.0
-        transition_count = 0
-        artificial_before = []
-        artificial_after = []
-        for item in selected:
-            interval, chain, feature, offset_report = (
-                item[3], item[4], item[5], item[6]
-            )
-            entry = self._point(axis, nominal, interval[0])
-            exit_point = self._point(axis, nominal, interval[1])
-            entry_curve = self._smooth_transition(
-                entry,
-                chain[0],
-                self._axis_tangent(axis),
-                _unit_direction(chain[0], chain[1]),
-                axis,
-            )
-            exit_curve = self._smooth_transition(
-                chain[-1],
-                exit_point,
-                _unit_direction(chain[-2], chain[-1]),
-                self._axis_tangent(axis),
-                axis,
-            )
-            if entry_curve is None or exit_curve is None:
-                continue
-            entry_after = _transition_curve_angles(
-                (entry,) + entry_curve,
-                self._axis_tangent(axis),
-                _unit_direction(chain[0], chain[1]),
-            )
-            exit_after = _transition_curve_angles(
-                (chain[-1],) + exit_curve,
-                _unit_direction(chain[-2], chain[-1]),
-                self._axis_tangent(axis),
-            )
-            if max(entry_after + exit_after, default=0.0) > (
-                self._parameters.maximum_artificial_turn_deg
-                + _COORDINATE_TOLERANCE_MM
-            ):
-                continue
-            raw_points.append(entry)
-            raw_points.extend(chain)
-            raw_points.append(exit_point)
-            smoothed_points.append(entry)
-            smoothed_points.extend(entry_curve)
-            smoothed_points.extend(chain[1:-1])
-            smoothed_points.append(chain[-1])
-            smoothed_points.extend(exit_curve)
-            transition_count += 2
-            artificial_before.extend(
-                (
-                    _turn_angle_deg(
-                        self._axis_tangent(axis),
-                        _unit_direction(entry, chain[0]),
-                    ),
-                    _turn_angle_deg(
-                        _unit_direction(entry, chain[0]),
-                        _unit_direction(chain[0], chain[1]),
-                    ),
-                    _turn_angle_deg(
-                        _unit_direction(chain[-2], chain[-1]),
-                        _unit_direction(chain[-1], exit_point),
-                    ),
-                    _turn_angle_deg(
-                        _unit_direction(chain[-1], exit_point),
-                        self._axis_tangent(axis),
-                    ),
-                )
-            )
-            artificial_after.extend(entry_after)
-            artificial_after.extend(exit_after)
-            followed.append(feature.feature_id)
-            followed_bounds.append(feature.bounds_mm)
-            offset_reports.append(offset_report)
-            contour_following_length += _polyline_length(chain)
-        final_point = self._point(axis, nominal, travel_max)
-        raw_points.append(final_point)
-        smoothed_points.append(final_point)
+        assembled = self._assemble_feature_route(
+            selected, axis, nominal, travel_min, travel_max
+        )
+        if assembled is None:
+            return self._straight_path(axis, nominal, panel_bounds)
+        (
+            raw_points, smoothed_points, followed, followed_bounds,
+            offset_reports, contour_following_length, transition_count,
+            artificial_before, artificial_after,
+        ) = assembled
         raw_compact = _deduplicate(tuple(raw_points))
         compact = _clean_open_path(
             tuple(smoothed_points),
@@ -501,6 +467,206 @@ class SinuousSeamPathFinder:
             ),
         )
 
+    def _assemble_feature_route(
+        self, selected, axis, nominal, travel_min, travel_max
+    ):
+        """Join successive contours directly, using the nominal line only as fallback."""
+        start = self._point(axis, nominal, travel_min)
+        raw = [start]
+        smoothed = [start]
+        accepted = []
+        artificial_before = []
+        artificial_after = []
+        transition_count = 0
+        axis_tangent = self._axis_tangent(axis)
+        previous_chain = None
+        for item in selected:
+            interval, chain = item[3], item[4]
+            entry_tangent = _unit_direction(chain[0], chain[1])
+            if previous_chain is None:
+                entry = self._point(
+                    axis, nominal, max(travel_min, interval[0])
+                )
+                curve = self._smooth_transition(
+                    entry, chain[0], axis_tangent, entry_tangent, axis
+                )
+                if curve is None:
+                    continue
+                smoothed.append(entry)
+                smoothed.extend(curve)
+                raw.extend((entry, chain[0]))
+                artificial_before.extend((
+                    _turn_angle_deg(axis_tangent, _unit_direction(entry, chain[0])),
+                    _turn_angle_deg(_unit_direction(entry, chain[0]), entry_tangent),
+                ))
+                artificial_after.extend(
+                    _transition_curve_angles((entry,) + curve, axis_tangent, entry_tangent)
+                )
+                transition_count += 1
+            else:
+                exit_tangent = _unit_direction(previous_chain[-2], previous_chain[-1])
+                bridge = self._hole_to_hole_bridge(
+                    accepted[-1], item, axis, nominal
+                )
+                if bridge is not None:
+                    bridge_points, bridge_raw, bridge_turns = bridge
+                    smoothed.extend(bridge_points)
+                    raw.extend(bridge_raw)
+                    artificial_after.extend(bridge_turns)
+                    transition_count += 2
+                else:
+                    curve = self._smooth_transition(
+                        previous_chain[-1], chain[0], exit_tangent,
+                        entry_tangent, axis,
+                    )
+                    if curve is None:
+                        continue
+                    smoothed.extend(curve)
+                    raw.append(chain[0])
+                    artificial_before.extend((
+                        _turn_angle_deg(
+                            exit_tangent,
+                            _unit_direction(previous_chain[-1], chain[0]),
+                        ),
+                        _turn_angle_deg(
+                            _unit_direction(previous_chain[-1], chain[0]),
+                            entry_tangent,
+                        ),
+                    ))
+                    artificial_after.extend(
+                        _transition_curve_angles(
+                            (previous_chain[-1],) + curve,
+                            exit_tangent,
+                            entry_tangent,
+                        )
+                    )
+                    transition_count += 1
+            smoothed.extend(chain[1:])
+            raw.extend(chain[1:])
+            accepted.append(item)
+            previous_chain = chain
+        if not accepted:
+            final = self._point(axis, nominal, travel_max)
+            return (
+                [start, final], [start, final], [], [], [], 0.0, 0, [], []
+            )
+        interval, chain = accepted[-1][3], accepted[-1][4]
+        exit_point = self._point(axis, nominal, min(travel_max, interval[1]))
+        exit_tangent = _unit_direction(chain[-2], chain[-1])
+        exit_curve = self._smooth_transition(
+            chain[-1], exit_point, exit_tangent, axis_tangent, axis
+        )
+        if exit_curve is None:
+            travel = lambda point: point.y_mm if axis == "vertical" else point.x_mm
+            cross = lambda point: point.x_mm if axis == "vertical" else point.y_mm
+            remaining = travel_max - travel(chain[-1])
+            run = min(
+                self._parameters.approach_length_mm
+                + 3.0 * accepted[-1][6].maximum_offset_mm,
+                remaining / 3.0,
+            )
+            guide = 0.5 * (cross(chain[-1]) + nominal)
+            first_anchor = self._point(
+                axis, guide, travel(chain[-1]) + run
+            )
+            second_anchor = self._point(
+                axis, nominal, travel(chain[-1]) + 2.0 * run
+            )
+            first_curve = self._smooth_transition(
+                chain[-1], first_anchor, exit_tangent, axis_tangent, axis
+            )
+            second_curve = self._smooth_transition(
+                first_anchor, second_anchor, axis_tangent, axis_tangent, axis
+            )
+            if first_curve is None or second_curve is None:
+                return None
+            smoothed.extend(first_curve)
+            smoothed.extend(second_curve)
+            exit_curve = first_curve + second_curve
+            raw.extend((first_anchor, second_anchor))
+            transition_count += 2
+        else:
+            smoothed.extend(exit_curve)
+            raw.append(exit_point)
+            transition_count += 1
+        final = self._point(axis, nominal, travel_max)
+        smoothed.append(final)
+        raw.append(final)
+        artificial_before.extend((
+            _turn_angle_deg(exit_tangent, _unit_direction(chain[-1], exit_point)),
+            _turn_angle_deg(_unit_direction(chain[-1], exit_point), axis_tangent),
+        ))
+        artificial_after.extend(
+            _transition_curve_angles(
+                (chain[-1],) + exit_curve, exit_tangent, axis_tangent
+            )
+        )
+        return (
+            raw,
+            smoothed,
+            [item[5].feature_id for item in accepted],
+            [item[5].bounds_mm for item in accepted],
+            [item[6] for item in accepted],
+            sum(_polyline_length(item[4]) for item in accepted),
+            transition_count,
+            artificial_before,
+            artificial_after,
+        )
+
+    def _hole_to_hole_bridge(self, previous_item, item, axis, nominal):
+        """Join contours through a displaced guide, without returning to nominal."""
+        previous_chain, chain = previous_item[4], item[4]
+        travel = lambda point: point.y_mm if axis == "vertical" else point.x_mm
+        cross = lambda point: point.x_mm if axis == "vertical" else point.y_mm
+        gap = travel(chain[0]) - travel(previous_chain[-1])
+        if gap <= _COORDINATE_TOLERANCE_MM:
+            return None
+        maximum_offset = max(
+            previous_item[6].maximum_offset_mm,
+            item[6].maximum_offset_mm,
+        )
+        run = min(
+            self._parameters.approach_length_mm + 3.0 * maximum_offset,
+            gap / 3.0,
+        )
+        guide = 0.5 * (cross(previous_chain[-1]) + cross(chain[0]))
+        # Equal endpoints can occasionally put the guide back on nominal. A small,
+        # deterministic bias keeps the route attached to the followed-hole side.
+        if abs(guide - nominal) <= _COORDINATE_TOLERANCE_MM:
+            deviations = (
+                cross(previous_chain[-1]) - nominal,
+                cross(chain[0]) - nominal,
+            )
+            guide = nominal + max(deviations, key=lambda value: (abs(value), value))
+        first_anchor = self._point(axis, guide, travel(previous_chain[-1]) + run)
+        second_anchor = self._point(axis, guide, travel(chain[0]) - run)
+        exit_tangent = _unit_direction(previous_chain[-2], previous_chain[-1])
+        entry_tangent = _unit_direction(chain[0], chain[1])
+        first_curve = self._smooth_transition(
+            previous_chain[-1], first_anchor, exit_tangent,
+            self._axis_tangent(axis), axis,
+        )
+        second_curve = self._smooth_transition(
+            second_anchor, chain[0], self._axis_tangent(axis),
+            entry_tangent, axis,
+        )
+        if first_curve is None or second_curve is None:
+            return None
+        points = first_curve + (second_anchor,) + second_curve
+        turns = (
+            _transition_curve_angles(
+                (previous_chain[-1],) + first_curve,
+                exit_tangent,
+                self._axis_tangent(axis),
+            )
+            + _transition_curve_angles(
+                (second_anchor,) + second_curve,
+                self._axis_tangent(axis),
+                entry_tangent,
+            )
+        )
+        return points, (first_anchor, second_anchor, chain[0]), turns
+
     def _smooth_transition(
         self, first, last, first_tangent, last_tangent, axis
     ) -> tuple[Point2D, ...]:
@@ -508,44 +674,45 @@ class SinuousSeamPathFinder:
         chord = _distance(first, last)
         if chord <= _COORDINATE_TOLERANCE_MM:
             return (last,)
-        derivative_scale = chord * 0.5
-        for subdivisions in (4, 8, 16, 32):
-            points = [first]
-            for index in range(1, subdivisions + 1):
-                value = index / subdivisions
-                h00 = 2.0 * value ** 3 - 3.0 * value ** 2 + 1.0
-                h10 = value ** 3 - 2.0 * value ** 2 + value
-                h01 = -2.0 * value ** 3 + 3.0 * value ** 2
-                h11 = value ** 3 - value ** 2
-                points.append(
-                    Point2D(
-                        h00 * first.x_mm
-                        + h10 * derivative_scale * first_tangent[0]
-                        + h01 * last.x_mm
-                        + h11 * derivative_scale * last_tangent[0],
-                        h00 * first.y_mm
-                        + h10 * derivative_scale * first_tangent[1]
-                        + h01 * last.y_mm
-                        + h11 * derivative_scale * last_tangent[1],
+        for tangent_factor in (0.5, 0.35, 0.2, 0.1):
+            derivative_scale = chord * tangent_factor
+            for subdivisions in (4, 8, 16, 32):
+                points = [first]
+                for index in range(1, subdivisions + 1):
+                    value = index / subdivisions
+                    h00 = 2.0 * value ** 3 - 3.0 * value ** 2 + 1.0
+                    h10 = value ** 3 - 2.0 * value ** 2 + value
+                    h01 = -2.0 * value ** 3 + 3.0 * value ** 2
+                    h11 = value ** 3 - value ** 2
+                    points.append(
+                        Point2D(
+                            h00 * first.x_mm
+                            + h10 * derivative_scale * first_tangent[0]
+                            + h01 * last.x_mm
+                            + h11 * derivative_scale * last_tangent[0],
+                            h00 * first.y_mm
+                            + h10 * derivative_scale * first_tangent[1]
+                            + h01 * last.y_mm
+                            + h11 * derivative_scale * last_tangent[1],
+                        )
                     )
+                candidate = tuple(points)
+                directions = tuple(
+                    _unit_direction(one, two)
+                    for one, two in zip(candidate, candidate[1:])
                 )
-            candidate = tuple(points)
-            directions = tuple(
-                _unit_direction(one, two)
-                for one, two in zip(candidate, candidate[1:])
-            )
-            turn_angles = (
-                (_turn_angle_deg(first_tangent, directions[0]),)
-                + tuple(
-                    _turn_angle_deg(one, two)
-                    for one, two in zip(directions, directions[1:])
+                turn_angles = (
+                    (_turn_angle_deg(first_tangent, directions[0]),)
+                    + tuple(
+                        _turn_angle_deg(one, two)
+                        for one, two in zip(directions, directions[1:])
+                    )
+                    + (_turn_angle_deg(directions[-1], last_tangent),)
                 )
-                + (_turn_angle_deg(directions[-1], last_tangent),)
-            )
-            if _strictly_monotone(candidate, axis) and max(turn_angles) <= (
-                self._parameters.maximum_artificial_turn_deg
-            ):
-                return candidate[1:]
+                if _strictly_monotone(candidate, axis) and max(turn_angles) <= (
+                    self._parameters.maximum_artificial_turn_deg
+                ):
+                    return candidate[1:]
         return None
 
     @staticmethod
@@ -590,8 +757,18 @@ class SinuousSeamPathFinder:
             return None
         offset_result = self._offset_chain_into_opening(chain, feature, axis)
         if offset_result is None:
+            offset_result = self._longest_safe_offset_portion(
+                chain, feature, axis
+            )
+        if offset_result is None:
             return None
         chain, offset_report = offset_result
+        if (
+            offset_report.followed_contour_length_mm
+            < self._parameters.minimum_follow_length_mm
+            - _COORDINATE_TOLERANCE_MM
+        ):
+            return None
         chain_travel = tuple(
             point.y_mm if axis == "vertical" else point.x_mm for point in chain
         )
@@ -625,6 +802,29 @@ class SinuousSeamPathFinder:
             chain_travel[-1] + transition_run,
         )
         return boundary_distance, travel_span, interval, chain, offset_report
+
+    def _longest_safe_offset_portion(self, chain, feature, axis):
+        """Keep the longest safe contiguous portion when a tight end collapses."""
+        candidates = []
+        for first in range(len(chain) - 1):
+            for last in range(first + 2, len(chain) + 1):
+                portion = tuple(chain[first:last])
+                length = _polyline_length(portion)
+                if length + _COORDINATE_TOLERANCE_MM < (
+                    self._parameters.minimum_follow_length_mm
+                ):
+                    continue
+                candidates.append((
+                    -length,
+                    first,
+                    -last,
+                    portion,
+                ))
+        for _, _, _, portion in sorted(candidates):
+            result = self._offset_chain_into_opening(portion, feature, axis)
+            if result is not None:
+                return result
+        return None
 
     def _offset_chain_into_opening(self, chain, feature, axis):
         """Move only a followed contour chain beyond the visible cutter envelope."""
@@ -701,6 +901,16 @@ class SinuousSeamPathFinder:
                         self._parameters.hole_clearance_mm,
                         final_offset,
                         min(clearances),
+                        followed_contour_length_mm=_polyline_length(shifted),
+                        direction_used=_chain_direction(chain, feature.points),
+                        minimum_offset_mm=final_offset,
+                        maximum_offset_mm=final_offset,
+                        average_offset_mm=final_offset,
+                        original_profile_preserved=(
+                            min(clearances)
+                            >= self._parameters.hole_clearance_mm
+                            - _COORDINATE_TOLERANCE_MM
+                        ),
                     )
         return None
 
@@ -729,7 +939,7 @@ class SinuousSeamPathFinder:
                     chain.append(point)
                 if len(chain) < 2:
                     continue
-                simplified = _simplify_open(
+                simplified = _adaptive_simplify_open(
                     tuple(chain), self._parameters.boundary_simplification_mm
                 )
                 span = travel(simplified[-1]) - travel(simplified[0])
@@ -737,9 +947,9 @@ class SinuousSeamPathFinder:
                     continue
                 valid.append(
                     (
+                        -_polyline_length(simplified),
                         -span,
                         max(abs(cross(point) - nominal) for point in simplified),
-                        _polyline_length(simplified),
                         tuple((round(point.x_mm, 9), round(point.y_mm, 9)) for point in simplified),
                         simplified,
                     )
@@ -794,11 +1004,14 @@ class SinuousSeamPathFinder:
             parameters.maximum_artificial_turn_deg,
             parameters.approach_length_mm,
             parameters.hole_clearance_mm,
+            parameters.minimum_follow_length_mm,
         )
         if any(not math.isfinite(value) or value <= 0.0 for value in numeric):
             raise SplitOperationError("Sinuous seam parameters must be positive.")
         if parameters.maximum_features_per_seam < 1:
             raise SplitOperationError("At least one seam feature must be allowed.")
+        if parameters.maximum_variants_per_axis < 1:
+            raise SplitOperationError("At least one seam route variant is required.")
         return parameters
 
 
@@ -1024,6 +1237,21 @@ def _offset_feature_chain(chain, polygon, offset):
     return tuple(shifted)
 
 
+def _chain_direction(chain, polygon):
+    if len(chain) < 2:
+        return "unknown"
+    try:
+        first = polygon.index(chain[0])
+        second = polygon.index(chain[1])
+    except ValueError:
+        return "unknown"
+    if second == (first + 1) % len(polygon):
+        return "forward"
+    if second == (first - 1) % len(polygon):
+        return "reverse"
+    return "sampled"
+
+
 def _inward_segment_normal(first, second, polygon):
     tangent = _unit_direction(first, second)
     midpoint = Point2D(
@@ -1074,6 +1302,33 @@ def _simplify_open(points: tuple[Point2D, ...], tolerance: float) -> tuple[Point
     return left[:-1] + right
 
 
+def _adaptive_simplify_open(
+    points: tuple[Point2D, ...], tolerance: float
+) -> tuple[Point2D, ...]:
+    """Preserve visible curvature while removing redundant straight samples."""
+    compact = list(_deduplicate(points))
+    changed = True
+    while changed and len(compact) > 2:
+        changed = False
+        for index in range(1, len(compact) - 1):
+            previous, current, following = (
+                compact[index - 1], compact[index], compact[index + 1]
+            )
+            turn = _turn_angle_deg(
+                _unit_direction(previous, current),
+                _unit_direction(current, following),
+            )
+            if (
+                turn < 5.0
+                and _point_segment_distance(current, previous, following)
+                <= tolerance
+            ):
+                del compact[index]
+                changed = True
+                break
+    return tuple(compact)
+
+
 def _simplify_closed(points: tuple[Point2D, ...], tolerance: float) -> tuple[Point2D, ...]:
     # Preserve the canonical anchor and the farthest point, simplifying the two
     # ordered halves independently so loop topology remains deterministic.
@@ -1082,6 +1337,44 @@ def _simplify_closed(points: tuple[Point2D, ...], tolerance: float) -> tuple[Poi
     first = _simplify_open(points[:split + 1], tolerance)
     second = _simplify_open(points[split:] + (anchor,), tolerance)
     return first[:-1] + second[:-1]
+
+
+def _maximum_cycle_turn_deg(points: tuple[Point2D, ...]) -> float:
+    """Return the largest local boundary turn in one closed sample cycle."""
+    return max((
+        _turn_angle_deg(
+            _unit_direction(points[index - 1], points[index]),
+            _unit_direction(points[index], points[(index + 1) % len(points)]),
+        )
+        for index in range(len(points))
+    ), default=0.0)
+
+
+def _adaptive_simplify_closed(
+    points: tuple[Point2D, ...], tolerance: float
+) -> tuple[Point2D, ...]:
+    """Keep curved samples while collapsing low-curvature, near-linear points."""
+    compact = list(points)
+    changed = True
+    while changed and len(compact) > 3:
+        changed = False
+        for index in range(len(compact)):
+            previous = compact[index - 1]
+            current = compact[index]
+            following = compact[(index + 1) % len(compact)]
+            turn = _turn_angle_deg(
+                _unit_direction(previous, current),
+                _unit_direction(current, following),
+            )
+            if (
+                turn < 5.0
+                and _point_segment_distance(current, previous, following)
+                <= tolerance
+            ):
+                del compact[index]
+                changed = True
+                break
+    return _canonical_cycle(tuple(compact))
 
 
 def _deduplicate(points: tuple[Point2D, ...]) -> tuple[Point2D, ...]:

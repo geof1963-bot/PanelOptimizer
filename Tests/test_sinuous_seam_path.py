@@ -15,6 +15,7 @@ except ImportError:  # pragma: no cover
 
 from Core.MacroSplitCore import MacroSplitCore
 from Core.MeshPatchRebuilder import build_macro_mesh_parts
+from Core.Settings import Settings
 from Core.SinuousSeamPath import (
     Point2D,
     SinuousSeamParameters,
@@ -46,6 +47,12 @@ class SinuousSeamPathTests(unittest.TestCase):
         self.assertEqual(plan.vertical.followed_feature_ids, ())
         self.assertEqual(plan.horizontal.followed_feature_ids, ())
         self.assertEqual(plan.intersection_count, 1)
+
+    def test_v471_settings_are_bounded_mission_values(self):
+        self.assertEqual(Settings.Split.SEAM_SEARCH_CORRIDOR_MM, 75.0)
+        self.assertEqual(Settings.Split.MAX_FOLLOWED_FEATURES_PER_SEAM, 8)
+        self.assertEqual(Settings.Split.MAX_SEAM_VARIANTS_PER_AXIS, 12)
+        self.assertEqual(Settings.Split.SEAM_MIN_FOLLOW_LENGTH_MM, 15.0)
 
     def test_collinear_and_tiny_segments_are_removed(self):
         points = (
@@ -202,6 +209,123 @@ class SinuousSeamPathTests(unittest.TestCase):
         self.assertTrue(valid)
         self.assertEqual(valid[0].seam_plan.vertical.followed_feature_ids,
                          multiple.vertical.followed_feature_ids)
+
+    def test_v471_follows_four_holes_and_connects_without_center_return(self):
+        source = Part.makeBox(400.0, 400.0, 8.0)
+        for y_value in (45.0, 115.0, 285.0, 355.0):
+            source = source.cut(
+                Part.makeCylinder(10.0, 8.0, Vector(202.0, y_value, 0.0))
+            )
+        before = source.exportBrepToString()
+        finder = SinuousSeamPathFinder()
+        plan = finder.generate(source)
+        path = plan.vertical
+        self.assertEqual(len(path.followed_feature_ids), 4)
+        self.assertGreater(path.contour_following_length_mm, 100.0)
+        self.assertGreater(path.contour_following_ratio, 0.20)
+        first, second = path.followed_feature_bounds_mm[:2]
+        bridge_points = tuple(
+            point for point in path.points
+            if first[3] < point.y_mm < second[1]
+        )
+        self.assertTrue(bridge_points)
+        self.assertTrue(all(
+            abs(point.x_mm - path.nominal_coordinate_mm) > 0.10
+            for point in bridge_points
+        ))
+        self.assertFalse(_self_intersects(path.points))
+        self.assertTrue(all(
+            first_point.y_mm < second_point.y_mm
+            for first_point, second_point in zip(path.points, path.points[1:])
+        ))
+        candidates = finder.candidate_plans(plan, (0.0, 400.0, 0.0, 400.0))
+        result = next(
+            result for candidate in candidates
+            for result in (MacroSplitCore().cut(source, seam_plan=candidate),)
+            if result.solid_count == 4
+        )
+        self.assertEqual(result.seam_plan.vertical.followed_feature_ids,
+                         path.followed_feature_ids)
+        self.assertEqual(source.exportBrepToString(), before)
+
+    def test_combination_variants_recover_both_full_sinuous_axes(self):
+        source = Part.makeBox(300.0, 300.0, 8.0)
+        for x_value, y_value in (
+            (152.0, 50.0), (152.0, 250.0),
+            (50.0, 148.0), (250.0, 148.0),
+        ):
+            source = source.cut(
+                Part.makeCylinder(8.0, 8.0, Vector(x_value, y_value, 0.0))
+            )
+        finder = SinuousSeamPathFinder()
+        proposed = finder.generate(source)
+        candidates = finder.candidate_plans(
+            proposed, (0.0, 300.0, 0.0, 300.0)
+        )
+        self.assertEqual(len(candidates[0].vertical.followed_feature_ids), 2)
+        self.assertEqual(len(candidates[0].horizontal.followed_feature_ids), 2)
+        self.assertEqual(candidates[0].intersection_count, 1)
+
+    def test_longer_monotone_contour_direction_is_preferred(self):
+        points = tuple(Point2D(*point) for point in (
+            (0.0, 0.0), (0.0, 10.0), (0.0, 20.0), (10.0, 20.0),
+            (6.0, 15.0), (10.0, 10.0), (6.0, 5.0),
+        ))
+        chain = SinuousSeamPathFinder()._nearest_monotone_chain(
+            points, "vertical", 5.0, -20.0, 20.0
+        )
+        self.assertTrue(any(point.x_mm == 10.0 for point in chain))
+        self.assertGreater(
+            sum(
+                ((second.x_mm-first.x_mm) ** 2
+                 + (second.y_mm-first.y_mm) ** 2) ** 0.5
+                for first, second in zip(chain, chain[1:])
+            ),
+            25.0,
+        )
+
+    def test_boundary_sampling_refines_curves_and_compacts_straights(self):
+        class AdaptiveWire:
+            def __init__(self):
+                self.deflections = []
+
+            def discretize(self, Deflection=None, Number=None):
+                self.deflections.append(Deflection)
+                values = (
+                    ((0, 0), (5, 0), (10, 0), (10, 10), (0, 10), (0, 0))
+                    if Deflection == 2.0
+                    else (
+                        (0, 0), (2.5, 0), (5, 0), (7.5, 0), (10, 0),
+                        (10, 2), (9, 5), (7, 8), (4, 10), (0, 10), (0, 0),
+                    )
+                )
+                return tuple(SimpleNamespace(x=x, y=y) for x, y in values)
+
+        wire = AdaptiveWire()
+        points = SinuousSeamPathFinder()._sample_wire(wire)
+        self.assertEqual(wire.deflections, [2.0, 1.0])
+        self.assertIn(Point2D(9.0, 5.0), points)
+        self.assertNotIn(Point2D(5.0, 0.0), points)
+
+    def test_followed_hole_reports_preserved_original_profile(self):
+        source = self._perforated((52.0, 20.0, 8.0))
+        finder = SinuousSeamPathFinder()
+        plan = finder.generate(source)
+        report = plan.vertical.hole_offset_reports[0]
+        self.assertTrue(report.original_profile_preserved)
+        self.assertGreaterEqual(
+            report.minimum_material_side_clearance_mm,
+            report.clearance_mm - 1.0e-6,
+        )
+        result = MacroSplitCore().cut(source, seam_plan=plan)
+        material_probe = Part.makeCylinder(
+            0.03, 8.0, Vector(43.95, 20.0, 0.0)
+        )
+        expected = source.common(material_probe).Volume
+        self.assertGreater(expected, 0.0)
+        self.assertAlmostEqual(
+            result.shape.common(material_probe).Volume, expected, places=7
+        )
 
     def test_overlapping_feature_intervals_are_not_forced_into_invalid_chain(self):
         source = Part.makeBox(300.0, 300.0, 8.0)

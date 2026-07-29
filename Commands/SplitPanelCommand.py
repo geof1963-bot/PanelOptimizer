@@ -175,7 +175,13 @@ class PanelOptimizerSplitPanelCommand:
                         f"{report.cutter_envelope_mm:.3f} mm + clearance "
                         f"{report.clearance_mm:.3f} mm -> offset "
                         f"{report.final_offset_mm:.3f} mm, remaining "
-                        f"{report.minimum_material_side_clearance_mm:.3f} mm\n"
+                        f"{report.minimum_material_side_clearance_mm:.3f} mm, "
+                        f"followed {report.followed_contour_length_mm:.3f} mm "
+                        f"{report.direction_used}, offset min/max/avg "
+                        f"{report.minimum_offset_mm:.3f}/"
+                        f"{report.maximum_offset_mm:.3f}/"
+                        f"{report.average_offset_mm:.3f} mm, original profile "
+                        f"{'preserved' if report.original_profile_preserved else 'NOT preserved'}\n"
                     )
             for branch in dowel_application.plan.branches:
                 positions = tuple(
