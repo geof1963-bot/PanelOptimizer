@@ -14,7 +14,7 @@ try:
 except ImportError:  # pragma: no cover
     FreeCAD = Part = Vector = None
 
-from Core.DowelPlanner import DowelParameters, DowelPlanner
+from Core.DowelPlanner import DowelParameters, DowelPlanner, _candidate_distances
 from Core.Exceptions import DowelPlanningError
 from Core.MacroSplitCore import MacroSplitCore
 from Core.MeshPatchRebuilder import build_macro_mesh_parts
@@ -50,22 +50,40 @@ class DowelPlannerTests(unittest.TestCase):
         self.assertEqual(settings.DOWEL_EDGE_MARGIN_MM, 15.0)
         self.assertEqual(settings.DOWEL_MIN_MATERIAL_MARGIN_MM, 2.0)
         self.assertEqual(settings.DOWEL_CENTER_EXCLUSION_MM, 20.0)
+        self.assertEqual(settings.DOWEL_MIN_SPACING_MM, 60.0)
         self.assertEqual(settings.DOWELS_TARGET_PER_BRANCH, 3)
         self.assertEqual(settings.DOWELS_MIN_PER_BRANCH, 2)
 
-    def test_long_straight_branches_receive_three_deterministic_dowels(self):
+    def test_unsupported_third_dowel_uses_well_spaced_pair(self):
         source = Part.makeBox(300.0, 300.0, 8.0)
         macro = self._macro(source)
         first = DowelPlanner().plan(macro)
         second = DowelPlanner().plan(macro)
         self.assertEqual(first, second)
-        self.assertEqual(len(first.dowels), 12)
+        self.assertEqual(len(first.dowels), 8)
         self.assertEqual(
             tuple(len(branch.accepted_dowel_ids) for branch in first.branches),
-            (3, 3, 3, 3),
+            (2, 2, 2, 2),
         )
+        self.assertTrue(all(branch.used_two_dowel_fallback for branch in first.branches))
+        self.assertTrue(all(min(branch.spacing_mm) >= 60.0 for branch in first.branches))
         with self.assertRaises(FrozenInstanceError):
             first.dowels[0].status = "changed"
+
+    def test_long_branches_use_20_50_80_targets_without_clustering(self):
+        plan = DowelPlanner().plan(self._macro(Part.makeBox(594.0, 594.0, 8.0)))
+        self.assertEqual(len(plan.dowels), 12)
+        for branch in plan.branches:
+            self.assertEqual(branch.target_fractions, (0.20, 0.50, 0.80))
+            self.assertFalse(branch.used_two_dowel_fallback)
+            self.assertEqual(len(branch.accepted_dowel_ids), 3)
+            self.assertTrue(all(value >= 60.0 for value in branch.spacing_mm))
+
+    def test_relocation_order_is_symmetric_around_target(self):
+        self.assertEqual(
+            _candidate_distances(50.0, 0.0, 100.0, search_limit=15.0)[:7],
+            (50.0, 55.0, 45.0, 60.0, 40.0, 65.0, 35.0),
+        )
 
     def test_constrained_branches_accept_minimum_two(self):
         plan = DowelPlanner().plan(self._macro(Part.makeBox(100.0, 100.0, 8.0)))

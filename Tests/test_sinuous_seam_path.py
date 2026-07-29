@@ -18,6 +18,7 @@ from Core.SinuousSeamPath import (
     Point2D,
     SinuousSeamParameters,
     SinuousSeamPathFinder,
+    _clean_open_path,
 )
 
 
@@ -41,6 +42,32 @@ class SinuousSeamPathTests(unittest.TestCase):
         self.assertEqual(plan.vertical.followed_feature_ids, ())
         self.assertEqual(plan.horizontal.followed_feature_ids, ())
         self.assertEqual(plan.intersection_count, 1)
+
+    def test_collinear_and_tiny_segments_are_removed(self):
+        points = (
+            Point2D(0.0, 0.0),
+            Point2D(0.0, 0.01),
+            Point2D(0.0, 5.0),
+            Point2D(0.0, 10.0),
+        )
+        self.assertEqual(
+            _clean_open_path(points, 0.5, 30.0),
+            (Point2D(0.0, 0.0), Point2D(0.0, 10.0)),
+        )
+
+    def test_contour_entry_and_exit_are_smoothed_deterministically(self):
+        plan = SinuousSeamPathFinder().generate(
+            self._perforated((52.0, 20.0, 8.0))
+        )
+        path = plan.vertical
+        self.assertEqual(path.smoothing_transition_count, 2)
+        self.assertGreater(path.maximum_artificial_turn_before_deg, 30.0)
+        self.assertLessEqual(path.maximum_artificial_turn_after_deg, 30.0)
+        self.assertLess(
+            path.maximum_artificial_turn_after_deg,
+            path.maximum_artificial_turn_before_deg,
+        )
+        self.assertGreater(path.segment_count_after_cleanup, 1)
 
     def test_near_hole_is_followed_and_outside_corridor_is_ignored(self):
         near = SinuousSeamPathFinder().generate(

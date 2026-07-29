@@ -136,12 +136,29 @@ class PanelOptimizerSplitPanelCommand:
                 FreeCAD.Console.PrintMessage(
                     f"{path.axis.title()} seam: {path.path_length_mm:.3f} mm, "
                     f"max deviation {path.maximum_deviation_mm:.3f} mm, "
-                    f"features {len(path.followed_feature_ids)}\n"
+                    f"features {len(path.followed_feature_ids)}, segments "
+                    f"{path.segment_count_before_cleanup} -> "
+                    f"{path.segment_count_after_cleanup}, transitions "
+                    f"{path.smoothing_transition_count}, artificial turn "
+                    f"{path.maximum_artificial_turn_before_deg:.2f} -> "
+                    f"{path.maximum_artificial_turn_after_deg:.2f} deg\n"
                 )
             for branch in dowel_application.plan.branches:
+                positions = tuple(
+                    dowel.center_xyz_mm
+                    for dowel in dowel_application.plan.dowels
+                    if dowel.seam_branch == branch.branch_id
+                )
+                rejection_reasons = tuple(sorted({
+                    item.reason for item in branch.rejected_candidates
+                }))
                 FreeCAD.Console.PrintMessage(
                     f"{branch.branch_id}: "
-                    f"{len(branch.accepted_dowel_ids)} dowels\n"
+                    f"usable {branch.usable_length_mm:.3f} mm, targets "
+                    f"{branch.target_fractions}, positions {positions}, "
+                    f"spacing {branch.spacing_mm}, fallback "
+                    f"{branch.used_two_dowel_fallback}, rejected "
+                    f"{rejection_reasons}\n"
                 )
             for report in lip_application.reports:
                 FreeCAD.Console.PrintMessage(

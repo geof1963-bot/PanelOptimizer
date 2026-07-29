@@ -38,7 +38,7 @@ class PanelSettings:
 
 @dataclass(frozen=True)
 class JoinerySettings:
-    """Simple V4.40 wooden-dowel planning parameters, in millimetres."""
+    """Simple V4.60 wooden-dowel planning parameters, in millimetres."""
 
     DOWEL_DIAMETER_MM: float = 4.0
     DOWEL_HOLE_DIAMETER_MM: float = 4.3
@@ -47,6 +47,7 @@ class JoinerySettings:
     DOWEL_EDGE_MARGIN_MM: float = 15.0
     DOWEL_MIN_MATERIAL_MARGIN_MM: float = 2.0
     DOWEL_CENTER_EXCLUSION_MM: float = 20.0
+    DOWEL_MIN_SPACING_MM: float = 60.0
     DOWELS_TARGET_PER_BRANCH: int = 3
     DOWELS_MIN_PER_BRANCH: int = 2
 
@@ -81,6 +82,8 @@ class SplitSettings:
     SEAM_MIN_FEATURE_SIZE_MM: float = 8.0
     SEAM_BOUNDARY_DEFLECTION_MM: float = 2.0
     SEAM_SIMPLIFICATION_MM: float = 1.0
+    SEAM_SIMPLIFY_TOLERANCE_MM: float = 0.50
+    SEAM_MAX_ARTIFICIAL_TURN_DEG: float = 30.0
     SEAM_APPROACH_LENGTH_MM: float = 5.0
     SEAM_MAX_FEATURES: int = 1
 
