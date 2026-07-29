@@ -55,6 +55,8 @@ class SinuousSeamPathTests(unittest.TestCase):
         self.assertEqual(Settings.Split.SEAM_MIN_FOLLOW_LENGTH_MM, 15.0)
         self.assertEqual(Settings.Split.SEAM_BEAM_WIDTH, 6)
         self.assertEqual(Settings.Split.SEAM_COVERAGE_EPSILON_MM, 1.0)
+        self.assertEqual(Settings.Split.MAX_EXACT_TOPOLOGY_VALIDATIONS, 8)
+        self.assertEqual(Settings.Split.SEAM_PLANNING_TIME_BUDGET_S, 30.0)
 
     def test_collinear_and_tiny_segments_are_removed(self):
         points = (
@@ -285,6 +287,93 @@ class SinuousSeamPathTests(unittest.TestCase):
         self.assertEqual(result.solid_count, 4)
         self.assertLess(shortlist[0].vertical.longest_straight_segment_mm, 100.0)
         self.assertLess(shortlist[0].horizontal.longest_straight_segment_mm, 100.0)
+
+    def test_local_detour_levels_reduce_only_the_requested_unit(self):
+        source = Part.makeBox(300.0, 300.0, 8.0)
+        for x_value, y_value in (
+            (152.0, 50.0), (152.0, 250.0),
+            (50.0, 148.0), (250.0, 148.0),
+        ):
+            source = source.cut(
+                Part.makeCylinder(8.0, 8.0, Vector(x_value, y_value, 0.0))
+            )
+        finder = SinuousSeamPathFinder()
+        plan = finder.topology_shortlist(
+            finder.generate(source), (0.0, 300.0, 0.0, 300.0)
+        )[0]
+        self.assertEqual(plan.vertical.detour_ids, ("VDET_001", "VDET_002"))
+        self.assertEqual(plan.vertical.detour_levels, (3, 3))
+        self.assertEqual(plan.horizontal.detour_ids, ("HDET_001", "HDET_002"))
+        reduced = finder.simplify_detour(
+            plan, "VDET_001", (0.0, 300.0, 0.0, 300.0)
+        )
+        self.assertIsNotNone(reduced)
+        self.assertEqual(reduced.vertical.detour_levels, (2, 3))
+        self.assertEqual(reduced.horizontal, plan.horizontal)
+        self.assertLess(
+            reduced.vertical.contour_following_length_mm,
+            plan.vertical.contour_following_length_mm,
+        )
+        self.assertEqual(reduced.intersection_count, 1)
+        self.assertTrue(all(
+            report.original_profile_preserved
+            for report in reduced.vertical.hole_offset_reports
+        ))
+
+    def test_progressive_level_zero_bypass_keeps_other_detours_sinuous(self):
+        source = Part.makeBox(400.0, 400.0, 8.0)
+        for y_value in (45.0, 115.0, 285.0, 355.0):
+            source = source.cut(
+                Part.makeCylinder(10.0, 8.0, Vector(202.0, y_value, 0.0))
+            )
+        for x_value in (55.0, 345.0):
+            source = source.cut(
+                Part.makeCylinder(10.0, 8.0, Vector(x_value, 198.0, 0.0))
+            )
+        finder = SinuousSeamPathFinder()
+        plan = finder.topology_shortlist(
+            finder.generate(source), (0.0, 400.0, 0.0, 400.0)
+        )[0]
+        original_other_levels = plan.vertical.detour_levels[1:]
+        for expected in (2, 1, 0):
+            plan = finder.simplify_detour(
+                plan, "VDET_001", (0.0, 400.0, 0.0, 400.0)
+            )
+            self.assertIsNotNone(plan)
+            self.assertEqual(plan.vertical.detour_levels[0], expected)
+        self.assertEqual(plan.vertical.detour_levels[1:], original_other_levels)
+        self.assertEqual(plan.intersection_count, 1)
+        self.assertGreater(len(plan.vertical.followed_feature_ids), 1)
+        self.assertLess(plan.vertical.longest_straight_segment_mm, 100.0)
+        self.assertFalse(_self_intersects(plan.vertical.points))
+
+    def test_unexpected_solid_is_mapped_to_nearest_detour(self):
+        source = Part.makeBox(300.0, 300.0, 8.0)
+        for y_value in (50.0, 250.0):
+            source = source.cut(
+                Part.makeCylinder(8.0, 8.0, Vector(152.0, y_value, 0.0))
+            )
+        finder = SinuousSeamPathFinder()
+        plan = finder.generate(source)
+        first_bounds = plan.vertical.followed_feature_bounds_mm[0]
+        center = SimpleNamespace(
+            x=0.5 * (first_bounds[0] + first_bounds[2]),
+            y=0.5 * (first_bounds[1] + first_bounds[3]),
+        )
+        solids = [
+            SimpleNamespace(Volume=1.0, CenterOfMass=center),
+            *(
+                SimpleNamespace(
+                    Volume=1000.0 + index,
+                    CenterOfMass=SimpleNamespace(x=150.0, y=150.0),
+                )
+                for index in range(4)
+            ),
+        ]
+        result = SimpleNamespace(shape=SimpleNamespace(Solids=solids))
+        self.assertEqual(
+            finder.likely_problem_detours(plan, result)[0], "VDET_001"
+        )
 
     def test_longer_monotone_contour_direction_is_preferred(self):
         points = tuple(Point2D(*point) for point in (

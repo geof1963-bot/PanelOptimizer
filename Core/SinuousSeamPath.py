@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import math
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 from .Exceptions import SplitOperationError
 from .Settings import Settings
@@ -88,6 +88,9 @@ class SeamPath2D:
     contour_following_length_mm: float = 0.0
     contour_following_ratio: float = 0.0
     longest_straight_segment_mm: float = 0.0
+    detour_ids: tuple[str, ...] = ()
+    detour_feature_ids: tuple[str, ...] = ()
+    detour_levels: tuple[int, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -337,6 +340,124 @@ class SinuousSeamPathFinder:
         self._diagnostics["topology_shortlist_count"] = len(shortlist)
         return shortlist
 
+    @staticmethod
+    def topology_quality_key(plan: SinuousSeamPlan):
+        """Rank locally simplified plans without another exact boolean."""
+        return (
+            -(
+                plan.vertical.contour_following_length_mm
+                + plan.horizontal.contour_following_length_mm
+            ),
+            -(len(plan.vertical.followed_feature_ids)
+              + len(plan.horizontal.followed_feature_ids)),
+            plan.vertical.longest_straight_segment_mm
+            + plan.horizontal.longest_straight_segment_mm,
+            plan.vertical.points,
+            plan.horizontal.points,
+        )
+
+    @staticmethod
+    def detour_level(plan: SinuousSeamPlan, detour_id: str) -> int | None:
+        for path in (plan.vertical, plan.horizontal):
+            for identifier, level in zip(path.detour_ids, path.detour_levels):
+                if identifier == detour_id:
+                    return level
+        return None
+
+    def simplify_detour(
+        self,
+        plan: SinuousSeamPlan,
+        detour_id: str,
+        panel_bounds: tuple[float, float, float, float],
+    ) -> SinuousSeamPlan | None:
+        """Reduce exactly one local detour by one level and reuse the other axis."""
+        target = None
+        for path in (plan.vertical, plan.horizontal):
+            if detour_id in path.detour_ids:
+                target = path
+                break
+        if target is None:
+            return None
+        levels = dict(zip(target.detour_feature_ids, target.detour_levels))
+        index = target.detour_ids.index(detour_id)
+        feature_id = target.detour_feature_ids[index]
+        current = levels[feature_id]
+        if current <= 0:
+            return None
+        levels[feature_id] = current - 1
+        if target.axis == "vertical":
+            vertical = self._build_path(
+                "vertical", target.nominal_coordinate_mm,
+                plan.horizontal.nominal_coordinate_mm,
+                panel_bounds, plan.features, levels,
+            )
+            horizontal = plan.horizontal
+        else:
+            vertical = plan.vertical
+            horizontal = self._build_path(
+                "horizontal", target.nominal_coordinate_mm,
+                plan.vertical.nominal_coordinate_mm,
+                panel_bounds, plan.features, levels,
+            )
+        intersections = _intersection_count(vertical.points, horizontal.points)
+        candidate = SinuousSeamPlan(
+            vertical, horizontal, plan.features, intersections
+        )
+        if (
+            intersections != 1
+            or not _meaningfully_sinuous(vertical)
+            or not _meaningfully_sinuous(horizontal)
+        ):
+            return None
+        return candidate
+
+    @staticmethod
+    def likely_problem_detours(
+        plan: SinuousSeamPlan, macro_result: object
+    ) -> tuple[str, ...]:
+        """Map the smallest unexpected solids to nearby deterministic detours."""
+        feature_bounds = {
+            feature.feature_id: feature.bounds_mm for feature in plan.features
+        }
+        units = []
+        for path in (plan.vertical, plan.horizontal):
+            units.extend(zip(
+                path.detour_ids, path.detour_feature_ids, path.detour_levels
+            ))
+        active = tuple(item for item in units if item[2] > 0)
+        if not active:
+            return ()
+        try:
+            solids = tuple(sorted(
+                macro_result.shape.Solids,
+                key=lambda solid: float(solid.Volume),
+            ))
+            unexpected_count = max(1, len(solids) - 4)
+            centers = tuple(
+                (float(solid.CenterOfMass.x), float(solid.CenterOfMass.y))
+                for solid in solids[:unexpected_count]
+            )
+        except Exception:
+            centers = ()
+
+        def rectangle_distance(center, bounds):
+            x, y = center
+            xmin, ymin, xmax, ymax = bounds
+            return math.hypot(
+                max(xmin - x, 0.0, x - xmax),
+                max(ymin - y, 0.0, y - ymax),
+            )
+
+        ranked = []
+        for detour_id, feature_id, level in active:
+            bounds = feature_bounds.get(feature_id)
+            proximity = min(
+                (rectangle_distance(center, bounds) for center in centers),
+                default=math.inf,
+            ) if bounds is not None else math.inf
+            ranked.append((proximity, -level, detour_id))
+        return tuple(item[2] for item in sorted(ranked))
+
     def _path_variants(self, primary, center_other, panel_bounds, features):
         """Build a bounded set of cached-feature routes from complex to straight."""
         axis = primary.axis
@@ -499,6 +620,7 @@ class SinuousSeamPathFinder:
         center_other: float,
         panel_bounds: tuple[float, float, float, float],
         features: tuple[BoundaryFeature2D, ...],
+        detour_levels_by_feature: dict[str, int] | None = None,
     ) -> SeamPath2D:
         """Choose a few non-overlapping deterministic boundary detours."""
         xmin, xmax, ymin, ymax = panel_bounds
@@ -562,8 +684,38 @@ class SinuousSeamPathFinder:
             if len(selected) >= self._parameters.maximum_features_per_seam:
                 break
         selected.sort(key=lambda item: item[3][0])
+        prefix = "VDET" if axis == "vertical" else "HDET"
+        detour_units = tuple(
+            (
+                f"{prefix}_{index:03d}",
+                item[5].feature_id,
+                max(0, min(3, int(
+                    (detour_levels_by_feature or {}).get(item[5].feature_id, 3)
+                ))),
+            )
+            for index, item in enumerate(selected, start=1)
+        )
+        level_by_feature = {
+            feature_id: level for _detour_id, feature_id, level in detour_units
+        }
+        adjusted = []
+        for item in selected:
+            level = level_by_feature[item[5].feature_id]
+            if level == 0:
+                continue
+            if level < 3:
+                fraction = 0.70 if level == 2 else 0.35
+                shortened = _central_polyline_portion(item[4], fraction, axis)
+                if len(shortened) < 2:
+                    continue
+                report = replace(
+                    item[6],
+                    followed_contour_length_mm=_polyline_length(shortened),
+                )
+                item = item[:4] + (shortened, item[5], report)
+            adjusted.append(item)
         assembled = self._assemble_feature_route(
-            selected, axis, nominal, center_other, travel_min, travel_max
+            adjusted, axis, nominal, center_other, travel_min, travel_max
         )
         if assembled is None:
             key = f"{axis}_assembly_fallbacks"
@@ -611,6 +763,9 @@ class SinuousSeamPathFinder:
                  for first, second in zip(compact, compact[1:])),
                 default=0.0,
             ),
+            detour_ids=tuple(item[0] for item in detour_units),
+            detour_feature_ids=tuple(item[1] for item in detour_units),
+            detour_levels=tuple(item[2] for item in detour_units),
         )
 
     def _assemble_feature_route(
@@ -1330,6 +1485,44 @@ def _transition_curve_angles(points, first_tangent, last_tangent):
 
 def _polyline_length(points: tuple[Point2D, ...]) -> float:
     return sum(_distance(points[index], points[index + 1]) for index in range(len(points) - 1))
+
+
+def _central_polyline_portion(points, fraction, axis):
+    """Return a deterministic central arc-length portion of one detour."""
+    if len(points) < 2:
+        return tuple(points)
+    total = _polyline_length(points)
+    if total <= _COORDINATE_TOLERANCE_MM:
+        return tuple(points)
+    fraction = max(0.05, min(1.0, float(fraction)))
+    start_distance = 0.5 * total * (1.0 - fraction)
+    end_distance = total - start_distance
+
+    def point_at(distance):
+        traversed = 0.0
+        for first, second in zip(points, points[1:]):
+            length = _distance(first, second)
+            if traversed + length >= distance - _COORDINATE_TOLERANCE_MM:
+                ratio = 0.0 if length <= 0.0 else (distance - traversed) / length
+                ratio = max(0.0, min(1.0, ratio))
+                return Point2D(
+                    first.x_mm + ratio * (second.x_mm - first.x_mm),
+                    first.y_mm + ratio * (second.y_mm - first.y_mm),
+                )
+            traversed += length
+        return points[-1]
+
+    result = [point_at(start_distance)]
+    traversed = 0.0
+    for first, second in zip(points, points[1:]):
+        traversed += _distance(first, second)
+        if start_distance < traversed < end_distance:
+            result.append(second)
+    result.append(point_at(end_distance))
+    compact = _deduplicate(tuple(result))
+    if not _strictly_monotone(compact, axis):
+        return ()
+    return compact
 
 
 def _canonical_cycle(points: tuple[Point2D, ...]) -> tuple[Point2D, ...]:

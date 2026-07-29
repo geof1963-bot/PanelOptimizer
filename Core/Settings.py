@@ -101,6 +101,8 @@ class SplitSettings:
     SEAM_MIN_FOLLOW_LENGTH_MM: float = 15.0
     SEAM_BEAM_WIDTH: int = 6
     SEAM_COVERAGE_EPSILON_MM: float = 1.0
+    MAX_EXACT_TOPOLOGY_VALIDATIONS: int = 8
+    SEAM_PLANNING_TIME_BUDGET_S: float = 30.0
 
 
 @dataclass(frozen=True)

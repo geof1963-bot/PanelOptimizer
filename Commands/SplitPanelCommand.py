@@ -15,8 +15,94 @@ from Core.LipBuilder import LipBuilder, LipParameters
 from Core.MacroPartExtractor import MacroPartExtractor
 from Core.MacroSplitCore import MacroGrooveParameters, MacroSplitCore
 from Core.MeshPatchRebuilder import build_macro_mesh_parts, export_mesh_parts
+from Core.Settings import Settings
 from Core.SinuousSeamPath import SinuousSeamPathFinder
 from Core.SplitWorkflow import SplitDocumentWriter, validate_single_selection
+
+
+def _progressive_four_part_split(
+    path_finder,
+    candidate_plans,
+    panel_bounds,
+    exact_validator,
+    *,
+    maximum_validations=Settings.Split.MAX_EXACT_TOPOLOGY_VALIDATIONS,
+    time_budget_s=Settings.Split.SEAM_PLANNING_TIME_BUDGET_S,
+    clock=time.perf_counter,
+):
+    """Bounded best-first local simplification around exact topology feedback."""
+    queue = list(candidate_plans[:1])
+    reserve = list(candidate_plans[1:])
+    seen = set()
+    diagnostics = []
+    rejected_seconds = 0.0
+    successful_seconds = 0.0
+    validations = 0
+    started = clock()
+    accepted = None
+    while (
+        queue
+        and validations < maximum_validations
+        and clock() - started < time_budget_s
+    ):
+        queue.sort(key=path_finder.topology_quality_key)
+        candidate = queue.pop(0)
+        signature = (
+            candidate.vertical.points,
+            candidate.horizontal.points,
+            candidate.vertical.detour_levels,
+            candidate.horizontal.detour_levels,
+        )
+        if signature in seen:
+            continue
+        seen.add(signature)
+        attempt_started = clock()
+        validations += 1
+        attempt = exact_validator(candidate)
+        elapsed = clock() - attempt_started
+        if attempt.solid_count == 4:
+            accepted = attempt
+            successful_seconds = elapsed
+            diagnostics.append(
+                f"Seam candidate {validations}: parts = 4, accepted"
+            )
+            break
+        rejected_seconds += elapsed
+        problem_ids = path_finder.likely_problem_detours(candidate, attempt)
+        child = None
+        for detour_id in problem_ids:
+            before_level = path_finder.detour_level(candidate, detour_id)
+            child = path_finder.simplify_detour(
+                candidate, detour_id, panel_bounds
+            )
+            if child is not None:
+                diagnostics.append(
+                    f"Seam candidate {validations}: parts = "
+                    f"{attempt.solid_count}, problem detour = {detour_id}, "
+                    f"action = reduce {before_level}->{before_level - 1}"
+                )
+                break
+        if child is not None:
+            queue.append(child)
+        else:
+            for fallback in reserve:
+                fallback_signature = (
+                    fallback.vertical.points,
+                    fallback.horizontal.points,
+                    fallback.vertical.detour_levels,
+                    fallback.horizontal.detour_levels,
+                )
+                if fallback_signature not in seen:
+                    queue.append(fallback)
+                    break
+    return (
+        accepted,
+        validations,
+        rejected_seconds,
+        successful_seconds,
+        tuple(diagnostics),
+        clock() - started,
+    )
 
 
 class PanelOptimizerSplitPanelCommand:
@@ -85,29 +171,38 @@ class PanelOptimizerSplitPanelCommand:
             seam_diagnostics = path_finder.search_diagnostics
             timings["seams"] = time.perf_counter() - started
             macro_result = None
-            exact_topology_validations = 0
-            successful_split_seconds = 0.0
-            rejected_topology_seconds = 0.0
-            for candidate in candidate_plans:
-                attempt_started = time.perf_counter()
-                exact_topology_validations += 1
-                attempt = MacroSplitCore().cut(
+            def validate_candidate(candidate):
+                return MacroSplitCore().cut(
                     source_object.Shape,
                     self._vertical_offset,
                     self._horizontal_offset,
                     self._parameters,
                     seam_plan=candidate,
                 )
-                if attempt.solid_count == 4:
-                    macro_result = attempt
-                    successful_split_seconds = time.perf_counter() - attempt_started
-                    break
-                rejected_topology_seconds += time.perf_counter() - attempt_started
+
+            (
+                macro_result,
+                exact_topology_validations,
+                rejected_topology_seconds,
+                successful_split_seconds,
+                topology_attempts,
+                seam_planning_seconds,
+            ) = _progressive_four_part_split(
+                path_finder,
+                candidate_plans,
+                panel_bounds,
+                validate_candidate,
+            )
+            seam_diagnostics["progressive_planning_seconds"] = (
+                seam_planning_seconds
+            )
             timings["topology_validation"] = rejected_topology_seconds
             timings["split"] = successful_split_seconds
             if macro_result is None:
+                detail = " ".join(topology_attempts[-3:])
                 raise PanelOptimizerError(
-                    "No seam candidate produced exactly four parts."
+                    "No four-part sinuous route remained after bounded local "
+                    f"detour simplification. {detail}"
                 )
             planner = DowelPlanner()
             started = time.perf_counter()
@@ -168,6 +263,8 @@ class PanelOptimizerSplitPanelCommand:
                 f"transition cache hits "
                 f"{seam_diagnostics.get('transition_cache_hits', 0)}\n"
             )
+            for diagnostic in topology_attempts:
+                FreeCAD.Console.PrintMessage(diagnostic + "\n")
             for path in (
                 macro_result.seam_plan.vertical,
                 macro_result.seam_plan.horizontal,
@@ -185,6 +282,17 @@ class PanelOptimizerSplitPanelCommand:
                     f"({path.contour_following_ratio:.1%}), longest straight "
                     f"{path.longest_straight_segment_mm:.3f} mm\n"
                 )
+                if path.detour_ids:
+                    FreeCAD.Console.PrintMessage(
+                        "  detours "
+                        + ", ".join(
+                            f"{detour_id}=L{level}"
+                            for detour_id, level in zip(
+                                path.detour_ids, path.detour_levels
+                            )
+                        )
+                        + "\n"
+                    )
                 for report in path.hole_offset_reports:
                     FreeCAD.Console.PrintMessage(
                         f"  {report.feature_id}: bounds "
