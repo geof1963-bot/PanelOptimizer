@@ -20,6 +20,7 @@ _COORDINATE_TOLERANCE_MM = 1.0e-6
 
 __all__ = [
     "BoundaryFeature2D",
+    "HoleOffsetReport",
     "Point2D",
     "SeamPath2D",
     "SinuousSeamParameters",
@@ -48,6 +49,19 @@ class BoundaryFeature2D:
 
 
 @dataclass(frozen=True, slots=True)
+class HoleOffsetReport:
+    """Scalar evidence that a followed cutter path remains inside an opening."""
+
+    feature_id: str
+    boundary_bounds_mm: tuple[float, float, float, float]
+    interior_side: str
+    cutter_envelope_mm: float
+    clearance_mm: float
+    final_offset_mm: float
+    minimum_material_side_clearance_mm: float
+
+
+@dataclass(frozen=True, slots=True)
 class SeamPath2D:
     """One continuous monotone edge-to-edge seam polyline."""
 
@@ -63,6 +77,7 @@ class SeamPath2D:
     smoothing_transition_count: int = 0
     maximum_artificial_turn_before_deg: float = 0.0
     maximum_artificial_turn_after_deg: float = 0.0
+    hole_offset_reports: tuple[HoleOffsetReport, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -87,6 +102,7 @@ class SinuousSeamParameters:
     path_simplify_tolerance_mm: float = Settings.Split.SEAM_SIMPLIFY_TOLERANCE_MM
     maximum_artificial_turn_deg: float = Settings.Split.SEAM_MAX_ARTIFICIAL_TURN_DEG
     approach_length_mm: float = Settings.Split.SEAM_APPROACH_LENGTH_MM
+    hole_clearance_mm: float = Settings.Split.SEAM_HOLE_CLEARANCE_MM
     maximum_features_per_seam: int = Settings.Split.SEAM_MAX_FEATURES
 
 
@@ -298,7 +314,7 @@ class SinuousSeamPathFinder:
                 feature, axis, nominal, center_other, allowed_min, allowed_max
             )
             if detour is not None:
-                boundary_distance, travel_span, interval, chain = detour
+                boundary_distance, travel_span, interval, chain, report = detour
                 ranked.append(
                     (
                         boundary_distance,
@@ -307,6 +323,7 @@ class SinuousSeamPathFinder:
                         interval,
                         chain,
                         feature,
+                        report,
                     )
                 )
         selected = []
@@ -325,11 +342,14 @@ class SinuousSeamPathFinder:
         smoothed_points = [self._point(axis, nominal, travel_min)]
         followed = []
         followed_bounds = []
+        offset_reports = []
         transition_count = 0
         artificial_before = []
         artificial_after = []
         for item in selected:
-            interval, chain, feature = item[3], item[4], item[5]
+            interval, chain, feature, offset_report = (
+                item[3], item[4], item[5], item[6]
+            )
             entry = self._point(axis, nominal, interval[0])
             exit_point = self._point(axis, nominal, interval[1])
             raw_points.append(entry)
@@ -391,6 +411,7 @@ class SinuousSeamPathFinder:
             )
             followed.append(feature.feature_id)
             followed_bounds.append(feature.bounds_mm)
+            offset_reports.append(offset_report)
         final_point = self._point(axis, nominal, travel_max)
         raw_points.append(final_point)
         smoothed_points.append(final_point)
@@ -418,6 +439,7 @@ class SinuousSeamPathFinder:
             smoothing_transition_count=transition_count,
             maximum_artificial_turn_before_deg=max(artificial_before, default=0.0),
             maximum_artificial_turn_after_deg=max(artificial_after, default=0.0),
+            hole_offset_reports=tuple(offset_reports),
         )
 
     def _smooth_transition(
@@ -508,6 +530,10 @@ class SinuousSeamPathFinder:
         )
         if not chain:
             return None
+        offset_result = self._offset_chain_into_opening(chain, feature, axis)
+        if offset_result is None:
+            return None
+        chain, offset_report = offset_result
         chain_travel = tuple(
             point.y_mm if axis == "vertical" else point.x_mm for point in chain
         )
@@ -530,11 +556,95 @@ class SinuousSeamPathFinder:
             or max(cross_values) > allowed_max
         ):
             return None
-        interval = (
-            chain_travel[0] - self._parameters.approach_length_mm,
-            chain_travel[-1] + self._parameters.approach_length_mm,
+        # The offset contour needs enough run for its tangent transition to
+        # cross the opening edge cleanly without isolating a microscopic wedge.
+        transition_run = (
+            self._parameters.approach_length_mm
+            + 3.0 * offset_report.final_offset_mm
         )
-        return boundary_distance, travel_span, interval, chain
+        interval = (
+            chain_travel[0] - transition_run,
+            chain_travel[-1] + transition_run,
+        )
+        return boundary_distance, travel_span, interval, chain, offset_report
+
+    def _offset_chain_into_opening(self, chain, feature, axis):
+        """Move only a followed contour chain beyond the visible cutter envelope."""
+        from .MacroSplitCore import MacroGrooveParameters
+
+        profile = MacroGrooveParameters()
+        interiors = []
+        envelopes = []
+        sides = []
+        for first, second in zip(chain, chain[1:]):
+            tangent = _unit_direction(first, second)
+            normals = ((-tangent[1], tangent[0]), (tangent[1], -tangent[0]))
+            point = Point2D(
+                (first.x_mm + second.x_mm) / 2.0,
+                (first.y_mm + second.y_mm) / 2.0,
+            )
+            interior = next(
+                (
+                    normal
+                    for probe in (0.05, 0.25, 0.5, 1.0)
+                    for normal in normals
+                    if _point_in_polygon(
+                        Point2D(
+                            point.x_mm + normal[0] * probe,
+                            point.y_mm + normal[1] * probe,
+                        ),
+                        feature.points,
+                    )
+                ),
+                None,
+            )
+            if interior is None:
+                return None
+            canonical = (
+                (tangent[1], -tangent[0])
+                if axis == "vertical"
+                else (-tangent[1], tangent[0])
+            )
+            envelope = _material_side_cutter_envelope_mm(
+                interior, canonical, profile
+            )
+            interiors.append(interior)
+            envelopes.append(envelope)
+            sides.append(1 if _dot(interior, canonical) >= 0.0 else -1)
+
+        theoretical = max(envelopes)
+        required = theoretical + self._parameters.hole_clearance_mm
+        for step in range(41):
+            final_offset = required + step * 0.05
+            shifted = _offset_feature_chain(chain, feature.points, final_offset)
+            samples = _polyline_samples(shifted, 4)
+            if all(_point_in_polygon(point, feature.points) for point in samples):
+                clearances = tuple(
+                    _point_closed_polyline_distance(point, feature.points)
+                    - theoretical
+                    for point in samples
+                )
+                if min(clearances, default=-math.inf) >= (
+                    self._parameters.hole_clearance_mm
+                    - _COORDINATE_TOLERANCE_MM
+                ):
+                    side = (
+                        "positive cutter normal"
+                        if all(value > 0 for value in sides)
+                        else "negative cutter normal"
+                        if all(value < 0 for value in sides)
+                        else "locally varying cutter normal"
+                    )
+                    return shifted, HoleOffsetReport(
+                        feature.feature_id,
+                        feature.bounds_mm,
+                        side,
+                        theoretical,
+                        self._parameters.hole_clearance_mm,
+                        final_offset,
+                        min(clearances),
+                    )
+        return None
 
     def _nearest_monotone_chain(
         self, points: tuple[Point2D, ...], axis: str, nominal: float,
@@ -625,6 +735,7 @@ class SinuousSeamPathFinder:
             parameters.path_simplify_tolerance_mm,
             parameters.maximum_artificial_turn_deg,
             parameters.approach_length_mm,
+            parameters.hole_clearance_mm,
         )
         if any(not math.isfinite(value) or value <= 0.0 for value in numeric):
             raise SplitOperationError("Sinuous seam parameters must be positive.")
@@ -698,6 +809,180 @@ def _point_segment_distance(point, first, second):
     factor = max(0.0, min(1.0, ((point.x_mm-first.x_mm)*dx + (point.y_mm-first.y_mm)*dy) / denominator))
     projection = Point2D(first.x_mm + factor * dx, first.y_mm + factor * dy)
     return _distance(point, projection)
+
+
+def _dot(first, second):
+    return first[0] * second[0] + first[1] * second[1]
+
+
+def _point_in_polygon(point, polygon):
+    """Deterministic odd-even test for one sampled opening boundary."""
+    inside = False
+    for first, second in zip(polygon, polygon[1:] + polygon[:1]):
+        if ((first.y_mm > point.y_mm) != (second.y_mm > point.y_mm)):
+            crossing_x = first.x_mm + (
+                (point.y_mm - first.y_mm)
+                * (second.x_mm - first.x_mm)
+                / (second.y_mm - first.y_mm)
+            )
+            if point.x_mm < crossing_x:
+                inside = not inside
+    return inside
+
+
+def _point_closed_polyline_distance(point, polygon):
+    return min(
+        _point_segment_distance(point, first, second)
+        for first, second in zip(polygon, polygon[1:] + polygon[:1])
+    )
+
+
+def _polyline_samples(points, subdivisions):
+    samples = [points[0]]
+    for first, second in zip(points, points[1:]):
+        for index in range(1, subdivisions + 1):
+            ratio = index / subdivisions
+            samples.append(
+                Point2D(
+                    first.x_mm + ratio * (second.x_mm - first.x_mm),
+                    first.y_mm + ratio * (second.y_mm - first.y_mm),
+                )
+            )
+    return tuple(samples)
+
+
+def _offset_open_polyline(points, segment_normals, offset):
+    """Offset segment lines and join adjacent lines at their intersection."""
+    shifted = [
+        Point2D(
+            points[0].x_mm + segment_normals[0][0] * offset,
+            points[0].y_mm + segment_normals[0][1] * offset,
+        )
+    ]
+    for index in range(1, len(points) - 1):
+        point = points[index]
+        previous_base = Point2D(
+            point.x_mm + segment_normals[index - 1][0] * offset,
+            point.y_mm + segment_normals[index - 1][1] * offset,
+        )
+        following_base = Point2D(
+            point.x_mm + segment_normals[index][0] * offset,
+            point.y_mm + segment_normals[index][1] * offset,
+        )
+        previous_direction = _unit_direction(points[index - 1], point)
+        following_direction = _unit_direction(point, points[index + 1])
+        denominator = (
+            previous_direction[0] * following_direction[1]
+            - previous_direction[1] * following_direction[0]
+        )
+        if abs(denominator) <= _COORDINATE_TOLERANCE_MM:
+            shifted.append(
+                Point2D(
+                    (previous_base.x_mm + following_base.x_mm) / 2.0,
+                    (previous_base.y_mm + following_base.y_mm) / 2.0,
+                )
+            )
+            continue
+        delta_x = following_base.x_mm - previous_base.x_mm
+        delta_y = following_base.y_mm - previous_base.y_mm
+        factor = (
+            delta_x * following_direction[1]
+            - delta_y * following_direction[0]
+        ) / denominator
+        shifted.append(
+            Point2D(
+                previous_base.x_mm + previous_direction[0] * factor,
+                previous_base.y_mm + previous_direction[1] * factor,
+            )
+        )
+    shifted.append(
+        Point2D(
+            points[-1].x_mm + segment_normals[-1][0] * offset,
+            points[-1].y_mm + segment_normals[-1][1] * offset,
+        )
+    )
+    return tuple(shifted)
+
+
+def _offset_feature_chain(chain, polygon, offset):
+    """Return chain vertices from the inward offset of the complete boundary."""
+    shifted = []
+    for point in chain:
+        try:
+            index = polygon.index(point)
+        except ValueError:
+            return ()
+        previous = polygon[index - 1]
+        following = polygon[(index + 1) % len(polygon)]
+        incoming = _unit_direction(previous, point)
+        outgoing = _unit_direction(point, following)
+        incoming_normal = _inward_segment_normal(previous, point, polygon)
+        outgoing_normal = _inward_segment_normal(point, following, polygon)
+        incoming_base = Point2D(
+            point.x_mm + incoming_normal[0] * offset,
+            point.y_mm + incoming_normal[1] * offset,
+        )
+        outgoing_base = Point2D(
+            point.x_mm + outgoing_normal[0] * offset,
+            point.y_mm + outgoing_normal[1] * offset,
+        )
+        denominator = incoming[0] * outgoing[1] - incoming[1] * outgoing[0]
+        if abs(denominator) <= _COORDINATE_TOLERANCE_MM:
+            shifted.append(
+                Point2D(
+                    (incoming_base.x_mm + outgoing_base.x_mm) / 2.0,
+                    (incoming_base.y_mm + outgoing_base.y_mm) / 2.0,
+                )
+            )
+            continue
+        delta_x = outgoing_base.x_mm - incoming_base.x_mm
+        delta_y = outgoing_base.y_mm - incoming_base.y_mm
+        factor = (
+            delta_x * outgoing[1] - delta_y * outgoing[0]
+        ) / denominator
+        shifted.append(
+            Point2D(
+                incoming_base.x_mm + incoming[0] * factor,
+                incoming_base.y_mm + incoming[1] * factor,
+            )
+        )
+    return tuple(shifted)
+
+
+def _inward_segment_normal(first, second, polygon):
+    tangent = _unit_direction(first, second)
+    midpoint = Point2D(
+        (first.x_mm + second.x_mm) / 2.0,
+        (first.y_mm + second.y_mm) / 2.0,
+    )
+    normals = ((-tangent[1], tangent[0]), (tangent[1], -tangent[0]))
+    for probe in (0.05, 0.25, 0.5, 1.0):
+        for normal in normals:
+            if _point_in_polygon(
+                Point2D(
+                    midpoint.x_mm + normal[0] * probe,
+                    midpoint.y_mm + normal[1] * probe,
+                ),
+                polygon,
+            ):
+                return normal
+    return normals[0]
+
+
+def _material_side_cutter_envelope_mm(interior, canonical_normal, profile):
+    """Return the actual asymmetric profile reach toward visible material."""
+    negative_extent = float(profile.top_width_mm) / 2.0
+    positive_extent = max(
+        float(profile.top_width_mm) / 2.0,
+        float(profile.bottom_width_mm) / 2.0 + float(profile.bottom_width_mm),
+    )
+    # If the opening is on +normal, material is on the negative side, and
+    # conversely.  Keeping both values explicit preserves asymmetric profiles.
+    return (
+        negative_extent
+        if _dot(interior, canonical_normal) >= 0.0
+        else positive_extent
+    )
 
 
 def _simplify_open(points: tuple[Point2D, ...], tolerance: float) -> tuple[Point2D, ...]:

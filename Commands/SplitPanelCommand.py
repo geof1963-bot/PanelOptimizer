@@ -165,6 +165,16 @@ class PanelOptimizerSplitPanelCommand:
                     f"{path.maximum_artificial_turn_before_deg:.2f} -> "
                     f"{path.maximum_artificial_turn_after_deg:.2f} deg\n"
                 )
+                for report in path.hole_offset_reports:
+                    FreeCAD.Console.PrintMessage(
+                        f"  {report.feature_id}: bounds "
+                        f"{report.boundary_bounds_mm}, interior "
+                        f"{report.interior_side}, envelope "
+                        f"{report.cutter_envelope_mm:.3f} mm + clearance "
+                        f"{report.clearance_mm:.3f} mm -> offset "
+                        f"{report.final_offset_mm:.3f} mm, remaining "
+                        f"{report.minimum_material_side_clearance_mm:.3f} mm\n"
+                    )
             for branch in dowel_application.plan.branches:
                 positions = tuple(
                     dowel.center_xyz_mm
@@ -186,7 +196,12 @@ class PanelOptimizerSplitPanelCommand:
                     f"{branch.rejected_geometry_counts or rejection_reasons}, "
                     f"cheap {branch.cheap_candidate_count}, shortlist "
                     f"{branch.shortlisted_candidate_count}, exact "
-                    f"{branch.exact_validation_count}\n"
+                    f"{branch.exact_validation_count}, safe intervals "
+                    f"{branch.safe_interval_count}, unsupported "
+                    f"{branch.unsupported_spans_mm}, largest "
+                    f"{branch.largest_unsupported_span_mm:.3f} mm, "
+                    f"coverage {branch.coverage_target_achieved}, spacing "
+                    f"exception {branch.spacing_exception}\n"
                 )
             for report in lip_application.reports:
                 FreeCAD.Console.PrintMessage(

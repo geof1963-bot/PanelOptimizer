@@ -52,8 +52,10 @@ class DowelPlannerTests(unittest.TestCase):
         self.assertEqual(settings.DOWEL_MIN_MATERIAL_MARGIN_MM, 2.0)
         self.assertEqual(settings.DOWEL_CENTER_EXCLUSION_MM, 20.0)
         self.assertEqual(settings.DOWEL_MIN_SPACING_MM, 60.0)
+        self.assertEqual(settings.DOWEL_MAX_UNSUPPORTED_SPAN_MM, 110.0)
         self.assertEqual(settings.DOWELS_TARGET_PER_BRANCH, 3)
         self.assertEqual(settings.DOWELS_MIN_PER_BRANCH, 2)
+        self.assertEqual(settings.DOWELS_MAX_PER_BRANCH, 4)
 
     def test_unsupported_third_dowel_uses_well_spaced_pair(self):
         source = Part.makeBox(300.0, 300.0, 8.0)
@@ -71,11 +73,11 @@ class DowelPlannerTests(unittest.TestCase):
         with self.assertRaises(FrozenInstanceError):
             first.dowels[0].status = "changed"
 
-    def test_long_branches_use_20_50_80_targets_without_clustering(self):
+    def test_long_branches_use_balanced_coverage_without_clustering(self):
         plan = DowelPlanner().plan(self._macro(Part.makeBox(594.0, 594.0, 8.0)))
         self.assertEqual(len(plan.dowels), 12)
         for branch in plan.branches:
-            self.assertEqual(branch.target_fractions, (0.20, 0.50, 0.80))
+            self.assertEqual(branch.target_fractions, (0.25, 0.50, 0.75))
             self.assertFalse(branch.used_two_dowel_fallback)
             self.assertEqual(len(branch.accepted_dowel_ids), 3)
             self.assertTrue(all(value >= 60.0 for value in branch.spacing_mm))
@@ -83,6 +85,26 @@ class DowelPlannerTests(unittest.TestCase):
             self.assertEqual(branch.sampled_point_count, branch.safe_candidate_count)
             self.assertEqual(branch.cheap_candidate_count, branch.sampled_point_count)
             self.assertLessEqual(branch.exact_validation_count, 3)
+            self.assertLessEqual(branch.largest_unsupported_span_mm, 110.0)
+            self.assertTrue(branch.coverage_target_achieved)
+            self.assertFalse(branch.spacing_exception)
+
+    def test_four_dowels_are_used_only_when_three_cannot_cover_branch(self):
+        long_plan = DowelPlanner().plan(
+            self._macro(Part.makeBox(1000.0, 1000.0, 8.0))
+        )
+        self.assertTrue(
+            all(len(branch.accepted_dowel_ids) == 4 for branch in long_plan.branches)
+        )
+        self.assertTrue(
+            all(branch.largest_unsupported_span_mm <= 110.0 for branch in long_plan.branches)
+        )
+        ordinary = DowelPlanner().plan(
+            self._macro(Part.makeBox(594.0, 594.0, 8.0))
+        )
+        self.assertTrue(
+            all(len(branch.accepted_dowel_ids) == 3 for branch in ordinary.branches)
+        )
 
     def test_safe_pool_is_independent_of_selected_spacing(self):
         plan = DowelPlanner().plan(self._macro(Part.makeBox(300.0, 300.0, 8.0)))
@@ -164,10 +186,10 @@ class DowelPlannerTests(unittest.TestCase):
         self.assertEqual(
             tuple((round(item.center_xyz_mm[0], 6), round(item.center_xyz_mm[1], 6)) for item in plan.dowels),
             (
-                (297.0, 15.0), (297.0, 145.0), (297.0, 277.0),
-                (297.0, 317.0), (297.0, 447.0), (297.0, 579.0),
-                (15.0, 297.0), (145.0, 297.0), (277.0, 297.0),
-                (317.0, 297.0), (447.0, 297.0), (579.0, 297.0),
+                (297.0, 80.0), (297.0, 145.0), (297.0, 210.0),
+                (297.0, 382.0), (297.0, 447.0), (297.0, 512.0),
+                (80.0, 297.0), (145.0, 297.0), (210.0, 297.0),
+                (382.0, 297.0), (447.0, 297.0), (512.0, 297.0),
             ),
         )
 

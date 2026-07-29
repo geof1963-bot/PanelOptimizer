@@ -47,8 +47,10 @@ class DowelParameters:
     material_margin_mm: float = Settings.Joinery.DOWEL_MIN_MATERIAL_MARGIN_MM
     center_exclusion_mm: float = Settings.Joinery.DOWEL_CENTER_EXCLUSION_MM
     minimum_spacing_mm: float = Settings.Joinery.DOWEL_MIN_SPACING_MM
+    maximum_unsupported_span_mm: float = Settings.Joinery.DOWEL_MAX_UNSUPPORTED_SPAN_MM
     target_per_branch: int = Settings.Joinery.DOWELS_TARGET_PER_BRANCH
     minimum_per_branch: int = Settings.Joinery.DOWELS_MIN_PER_BRANCH
+    maximum_per_branch: int = Settings.Joinery.DOWELS_MAX_PER_BRANCH
 
 
 @dataclass(frozen=True, slots=True)
@@ -103,6 +105,11 @@ class SeamBranchPlan:
     cheap_candidate_count: int = 0
     shortlisted_candidate_count: int = 0
     exact_validation_count: int = 0
+    safe_interval_count: int = 0
+    unsupported_spans_mm: tuple[float, ...] = ()
+    largest_unsupported_span_mm: float = 0.0
+    coverage_target_achieved: bool = False
+    spacing_exception: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -273,6 +280,26 @@ class DowelPlanner:
                     cheap_candidate_count=cheap_candidate_count,
                     shortlisted_candidate_count=len(exact_results),
                     exact_validation_count=len(exact_results),
+                    safe_interval_count=_safe_interval_count(
+                        candidates, sampling_interval
+                    ),
+                    unsupported_spans_mm=_unsupported_spans(
+                        branch_dowels, usable_interval
+                    ),
+                    largest_unsupported_span_mm=max(
+                        _unsupported_spans(branch_dowels, usable_interval),
+                        default=usable_length,
+                    ),
+                    coverage_target_achieved=max(
+                        _unsupported_spans(branch_dowels, usable_interval),
+                        default=usable_length,
+                    ) <= self._parameters.maximum_unsupported_span_mm
+                    + _COORDINATE_TOLERANCE_MM,
+                    spacing_exception=(
+                        min(_adjacent_center_spacings(branch_dowels), default=math.inf)
+                        < self._parameters.minimum_spacing_mm
+                        - _COORDINATE_TOLERANCE_MM
+                    ),
                 )
             )
         return DowelPlan(tuple(accepted), tuple(branch_results))
@@ -426,34 +453,113 @@ class DowelPlanner:
         return (), (), exact_results, tuple(rejections)
 
     def _select_safe_subset(self, candidates, interval):
-        """Apply spacing only after geometry-safe candidates are known."""
+        """Choose the smallest useful 2-4 layout by unsupported branch span."""
         if len(candidates) < self._parameters.minimum_per_branch:
             return (), ()
-        if self._parameters.target_per_branch >= 3 and len(candidates) >= 3:
-            selected = self._best_subset(
-                candidates,
-                3,
-                self._parameters.minimum_spacing_mm,
-                interval,
-                _TARGET_FRACTIONS,
+        preferred = {}
+        for count in range(
+            self._parameters.minimum_per_branch,
+            min(self._parameters.maximum_per_branch, len(candidates)) + 1,
+        ):
+            preferred[count] = self._best_coverage_subset(
+                candidates, count, self._parameters.minimum_spacing_mm, interval
             )
+        three = preferred.get(3, ())
+        if three:
+            if _largest_candidate_gap(three, interval) <= (
+                self._parameters.maximum_unsupported_span_mm
+                + _COORDINATE_TOLERANCE_MM
+            ):
+                return three, _even_fractions(3)
+            four = preferred.get(4, ())
+            if four and _largest_candidate_gap(four, interval) < (
+                _largest_candidate_gap(three, interval)
+                - _COORDINATE_TOLERANCE_MM
+            ):
+                return four, _even_fractions(4)
+            return three, _even_fractions(3)
+        pair = preferred.get(2, ())
+        if pair and _largest_candidate_gap(pair, interval) <= (
+            self._parameters.maximum_unsupported_span_mm
+            + _COORDINATE_TOLERANCE_MM
+        ):
+            return pair, _even_fractions(2)
+        if pair:
+            relaxed = self._best_relaxed_coverage(candidates, interval)
+            if relaxed and _largest_candidate_gap(relaxed, interval) < (
+                _largest_candidate_gap(pair, interval) - _COORDINATE_TOLERANCE_MM
+            ):
+                return relaxed, _even_fractions(len(relaxed))
+            return pair, _even_fractions(2)
+        fallback = self._best_coverage_subset(candidates, 2, 0.0, interval)
+        return fallback, _even_fractions(2)
+
+    def _best_relaxed_coverage(self, candidates, interval):
+        layouts = []
+        for count in range(3, min(self._parameters.maximum_per_branch, len(candidates)) + 1):
+            selected = self._best_coverage_subset(candidates, count, 0.0, interval)
             if selected:
-                return selected, _TARGET_FRACTIONS
-        selected = self._best_subset(
-            candidates,
-            2,
-            self._parameters.minimum_spacing_mm,
-            interval,
-            _FALLBACK_FRACTIONS,
-        )
-        if selected:
-            return selected, _FALLBACK_FRACTIONS
-        return (
-            self._best_subset(
-                candidates, 2, 0.0, interval, _FALLBACK_FRACTIONS
+                layouts.append(selected)
+                if _largest_candidate_gap(selected, interval) <= (
+                    self._parameters.maximum_unsupported_span_mm
+                    + _COORDINATE_TOLERANCE_MM
+                ):
+                    return selected
+        return min(
+            layouts,
+            key=lambda selected: (
+                _largest_candidate_gap(selected, interval), len(selected)
             ),
-            _FALLBACK_FRACTIONS,
+            default=(),
         )
+
+    @staticmethod
+    def _best_coverage_subset(candidates, count, minimum_spacing, interval):
+        """Dynamic Pareto search over all cheap candidates, bounded by O(k*n^2)."""
+        ordered = tuple(sorted(candidates, key=lambda item: item.distance_mm))
+        ideals = tuple(
+            interval[0] + (interval[1] - interval[0]) * fraction
+            for fraction in _even_fractions(count)
+        )
+        states = {}
+        for index, candidate in enumerate(ordered):
+            states[(1, index)] = [(
+                (index,),
+                candidate.distance_mm - interval[0],
+                math.inf,
+                abs(candidate.distance_mm - ideals[0]),
+            )]
+        for used in range(2, count + 1):
+            for index, candidate in enumerate(ordered):
+                options = []
+                for previous in range(index):
+                    spacing = math.dist(
+                        ordered[previous].center_xyz_mm[:2],
+                        candidate.center_xyz_mm[:2],
+                    )
+                    if spacing < minimum_spacing - _COORDINATE_TOLERANCE_MM:
+                        continue
+                    for indices, largest, smallest, deviation in states.get(
+                        (used - 1, previous), ()
+                    ):
+                        options.append((
+                            indices + (index,),
+                            max(largest, candidate.distance_mm - ordered[previous].distance_mm),
+                            min(smallest, spacing),
+                            deviation + abs(candidate.distance_mm - ideals[used - 1]),
+                        ))
+                states[(used, index)] = _pareto_layouts(options)
+        finalists = []
+        for index in range(len(ordered)):
+            for state in states.get((count, index), ()):
+                indices, largest, smallest, deviation = state
+                final_largest = max(largest, interval[1] - ordered[index].distance_mm)
+                signature = tuple(round(ordered[item].distance_mm, 9) for item in indices)
+                finalists.append((
+                    (final_largest, -smallest, deviation, signature),
+                    tuple(ordered[item] for item in indices),
+                ))
+        return min(finalists, key=lambda item: item[0])[1] if finalists else ()
 
     @staticmethod
     def _best_subset(candidates, count, minimum_spacing, interval, ideals):
@@ -687,13 +793,21 @@ class DowelPlanner:
             parameters.length_mm, parameters.axis_height_mm,
             parameters.edge_margin_mm, parameters.material_margin_mm,
             parameters.center_exclusion_mm, parameters.minimum_spacing_mm,
+            parameters.maximum_unsupported_span_mm,
         )
         if not all(math.isfinite(float(value)) and float(value) > 0.0 for value in values):
             raise DowelPlanningError("Dowel geometry settings must be finite and positive.")
         if parameters.hole_diameter_mm < parameters.dowel_diameter_mm:
             raise DowelPlanningError("Dowel hole diameter cannot be smaller than dowel diameter.")
-        if not (2 <= int(parameters.minimum_per_branch) <= int(parameters.target_per_branch) <= 3):
-            raise DowelPlanningError("Dowel branch counts must satisfy 2 <= minimum <= target <= 3.")
+        if not (
+            2 <= int(parameters.minimum_per_branch)
+            <= int(parameters.target_per_branch)
+            <= int(parameters.maximum_per_branch)
+            <= 4
+        ):
+            raise DowelPlanningError(
+                "Dowel branch counts must satisfy 2 <= minimum <= target <= maximum <= 4."
+            )
         return parameters
 
 
@@ -712,6 +826,68 @@ def _sample_distances(start, end, interval):
     if upper - values[-1] > _COORDINATE_TOLERANCE_MM:
         values.append(upper)
     return tuple(values)
+
+
+def _even_fractions(count):
+    return tuple(index / (count + 1.0) for index in range(1, count + 1))
+
+
+def _largest_candidate_gap(candidates, interval):
+    ordered = tuple(sorted(item.distance_mm for item in candidates))
+    if not ordered:
+        return interval[1] - interval[0]
+    return max(
+        (ordered[0] - interval[0],)
+        + tuple(second - first for first, second in zip(ordered, ordered[1:]))
+        + (interval[1] - ordered[-1],)
+    )
+
+
+def _unsupported_spans(dowels, interval):
+    ordered = tuple(sorted(item.branch_distance_mm for item in dowels))
+    if not ordered:
+        return (interval[1] - interval[0],)
+    return (
+        (ordered[0] - interval[0],)
+        + tuple(second - first for first, second in zip(ordered, ordered[1:]))
+        + (interval[1] - ordered[-1],)
+    )
+
+
+def _safe_interval_count(candidates, sampling_interval):
+    ordered = tuple(sorted(item.distance_mm for item in candidates))
+    if not ordered:
+        return 0
+    threshold = float(sampling_interval) * 1.5 + _COORDINATE_TOLERANCE_MM
+    return 1 + sum(
+        second - first > threshold
+        for first, second in zip(ordered, ordered[1:])
+    )
+
+
+def _pareto_layouts(options):
+    """Retain deterministic non-dominated partial coverage layouts."""
+    result = []
+    for candidate in sorted(options, key=lambda item: (item[1], -item[2], item[3], item[0])):
+        _indices, largest, smallest, deviation = candidate
+        if any(
+            prior[1] <= largest + _COORDINATE_TOLERANCE_MM
+            and prior[2] >= smallest - _COORDINATE_TOLERANCE_MM
+            and prior[3] <= deviation + _COORDINATE_TOLERANCE_MM
+            for prior in result
+        ):
+            continue
+        result = [
+            prior
+            for prior in result
+            if not (
+                largest <= prior[1] + _COORDINATE_TOLERANCE_MM
+                and smallest >= prior[2] - _COORDINATE_TOLERANCE_MM
+                and deviation <= prior[3] + _COORDINATE_TOLERANCE_MM
+            )
+        ]
+        result.append(candidate)
+    return result
 
 
 def _rejection_counts(rejections):

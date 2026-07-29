@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import unittest
 from dataclasses import FrozenInstanceError
+from types import SimpleNamespace
 
 try:
     import Part
@@ -19,6 +20,8 @@ from Core.SinuousSeamPath import (
     SinuousSeamParameters,
     SinuousSeamPathFinder,
     _clean_open_path,
+    _material_side_cutter_envelope_mm,
+    _point_closed_polyline_distance,
 )
 
 
@@ -80,6 +83,53 @@ class SinuousSeamPathTests(unittest.TestCase):
             self._perforated((10.0, 20.0, 5.0))
         )
         self.assertEqual(far.vertical.followed_feature_ids, ())
+
+    def test_circular_hole_chain_is_offset_by_visible_envelope_and_clearance(self):
+        plan = SinuousSeamPathFinder().generate(
+            self._perforated((52.0, 20.0, 8.0))
+        )
+        report = plan.vertical.hole_offset_reports[0]
+        self.assertEqual(report.feature_id, plan.vertical.followed_feature_ids[0])
+        self.assertAlmostEqual(report.cutter_envelope_mm, 1.1, places=9)
+        self.assertAlmostEqual(report.clearance_mm, 0.10, places=9)
+        self.assertAlmostEqual(report.final_offset_mm, 1.20, places=9)
+        self.assertGreaterEqual(report.minimum_material_side_clearance_mm, 0.10 - 1e-6)
+        self.assertIn("cutter normal", report.interior_side)
+
+    def test_irregular_opening_uses_local_interior_normals(self):
+        vertices = tuple(
+            Vector(*point, 0.0)
+            for point in (
+                (45.0, 10.0), (58.0, 12.0), (61.0, 21.0),
+                (55.0, 29.0), (44.0, 26.0), (42.0, 17.0), (45.0, 10.0),
+            )
+        )
+        opening = Part.Face(Part.makePolygon(vertices)).extrude(Vector(0, 0, 8))
+        source = Part.makeBox(100.0, 100.0, 8.0).cut(opening)
+        plan = SinuousSeamPathFinder().generate(source)
+        self.assertEqual(len(plan.vertical.hole_offset_reports), 1)
+        report = plan.vertical.hole_offset_reports[0]
+        self.assertGreaterEqual(report.minimum_material_side_clearance_mm, 0.10 - 1e-6)
+        feature = next(
+            item for item in plan.features if item.feature_id == report.feature_id
+        )
+        followed_points = tuple(
+            point for point in plan.vertical.points
+            if _point_closed_polyline_distance(point, feature.points) >= 1.1
+        )
+        self.assertTrue(followed_points)
+
+    def test_asymmetric_profile_selects_actual_material_side_envelope(self):
+        profile = SimpleNamespace(top_width_mm=2.2, bottom_width_mm=2.0)
+        canonical = (1.0, 0.0)
+        self.assertAlmostEqual(
+            _material_side_cutter_envelope_mm((1.0, 0.0), canonical, profile),
+            1.1,
+        )
+        self.assertAlmostEqual(
+            _material_side_cutter_envelope_mm((-1.0, 0.0), canonical, profile),
+            3.0,
+        )
 
     def test_multiple_holes_are_bounded_and_deterministic(self):
         source = self._perforated(

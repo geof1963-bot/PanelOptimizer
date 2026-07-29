@@ -48,8 +48,10 @@ class JoinerySettings:
     DOWEL_MIN_MATERIAL_MARGIN_MM: float = 2.0
     DOWEL_CENTER_EXCLUSION_MM: float = 20.0
     DOWEL_MIN_SPACING_MM: float = 60.0
+    DOWEL_MAX_UNSUPPORTED_SPAN_MM: float = 110.0
     DOWELS_TARGET_PER_BRANCH: int = 3
     DOWELS_MIN_PER_BRANCH: int = 2
+    DOWELS_MAX_PER_BRANCH: int = 4
 
 
 @dataclass(frozen=True)
@@ -92,6 +94,7 @@ class SplitSettings:
     SEAM_SIMPLIFY_TOLERANCE_MM: float = 0.50
     SEAM_MAX_ARTIFICIAL_TURN_DEG: float = 30.0
     SEAM_APPROACH_LENGTH_MM: float = 5.0
+    SEAM_HOLE_CLEARANCE_MM: float = 0.10
     SEAM_MAX_FEATURES: int = 1
 
 
