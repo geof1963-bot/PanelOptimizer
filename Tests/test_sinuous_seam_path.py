@@ -276,6 +276,15 @@ class SinuousSeamPathTests(unittest.TestCase):
         self.assertGreater(diagnostics["route_candidates_pruned"], 0)
         self.assertGreater(diagnostics["detour_cache_hits"], 0)
         self.assertGreater(diagnostics["transition_cache_hits"], 0)
+        self.assertTrue(all(
+            candidate.vertical.followed_feature_ids
+            and candidate.horizontal.followed_feature_ids
+            for candidate in shortlist
+        ))
+        result = MacroSplitCore().cut(source, seam_plan=shortlist[0])
+        self.assertEqual(result.solid_count, 4)
+        self.assertLess(shortlist[0].vertical.longest_straight_segment_mm, 100.0)
+        self.assertLess(shortlist[0].horizontal.longest_straight_segment_mm, 100.0)
 
     def test_longer_monotone_contour_direction_is_preferred(self):
         points = tuple(Point2D(*point) for point in (

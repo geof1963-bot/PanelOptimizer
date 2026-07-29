@@ -74,6 +74,7 @@ class DowelPosition:
     useful_depth_part_a_mm: float = 0.0
     useful_depth_part_b_mm: float = 0.0
     bore_exits_artistic_opening: bool = False
+    nearest_artistic_hole_clearance_mm: float = math.inf
 
 
 @dataclass(frozen=True, slots=True)
@@ -152,6 +153,8 @@ class _Candidate:
     tangent_xy: tuple[float, float]
     target_fraction: float
     target_distance_mm: float
+    nearest_opening_clearance_mm: float = math.inf
+    surrounding_material_mm: float = 0.0
 
 
 class DowelPlanner:
@@ -244,6 +247,9 @@ class DowelPlanner:
                     useful_depth_part_a_mm=useful_depths[0],
                     useful_depth_part_b_mm=useful_depths[1],
                     bore_exits_artistic_opening=opening_breakout,
+                    nearest_artistic_hole_clearance_mm=(
+                        candidate.nearest_opening_clearance_mm
+                    ),
                 )
                 branch_dowels.append(record)
                 accepted.append(record)
@@ -392,9 +398,33 @@ class DowelPlanner:
                     )
                 )
                 return
-            candidates.append(
-                _Candidate(distance, center, tangent, fraction, distance)
+            axis = _canonical_normal(tangent, branch.branch_id)
+            half = self._parameters.length_mm / 2.0
+            first = (
+                center[0] - axis[0] * half,
+                center[1] - axis[1] * half,
             )
+            second = (
+                center[0] + axis[0] * half,
+                center[1] + axis[1] * half,
+            )
+            opening_clearance = min((
+                _segment_polyline_distance(
+                    first,
+                    second,
+                    tuple((point.x_mm, point.y_mm) for point in feature.points),
+                )
+                - self._parameters.hole_diameter_mm / 2.0
+                for feature in macro_result.seam_plan.features
+            ), default=math.inf)
+            surrounding = min(
+                center[0] - bounds[0], bounds[1] - center[0],
+                center[1] - bounds[2], bounds[3] - center[1],
+            )
+            candidates.append(_Candidate(
+                distance, center, tangent, fraction, distance,
+                opening_clearance, surrounding,
+            ))
         for distance in sampled:
             evaluate(distance)
         sampling_interval = 5.0
@@ -518,8 +548,7 @@ class DowelPlanner:
             default=(),
         )
 
-    @staticmethod
-    def _best_coverage_subset(candidates, count, minimum_spacing, interval):
+    def _best_coverage_subset(self, candidates, count, minimum_spacing, interval):
         """Dynamic Pareto search over all cheap candidates, bounded by O(k*n^2)."""
         ordered = tuple(sorted(candidates, key=lambda item: item.distance_mm))
         ideals = tuple(
@@ -533,6 +562,11 @@ class DowelPlanner:
                 candidate.distance_mm - interval[0],
                 math.inf,
                 abs(candidate.distance_mm - ideals[0]),
+                min(
+                    candidate.nearest_opening_clearance_mm,
+                    min(candidate.surrounding_material_mm,
+                        self._parameters.edge_margin_mm),
+                ),
             )]
         for used in range(2, count + 1):
             for index, candidate in enumerate(ordered):
@@ -544,7 +578,7 @@ class DowelPlanner:
                     )
                     if spacing < minimum_spacing - _COORDINATE_TOLERANCE_MM:
                         continue
-                    for indices, largest, smallest, deviation in states.get(
+                    for indices, largest, smallest, deviation, quality in states.get(
                         (used - 1, previous), ()
                     ):
                         options.append((
@@ -552,16 +586,35 @@ class DowelPlanner:
                             max(largest, candidate.distance_mm - ordered[previous].distance_mm),
                             min(smallest, spacing),
                             deviation + abs(candidate.distance_mm - ideals[used - 1]),
+                            min(
+                                quality,
+                                candidate.nearest_opening_clearance_mm,
+                                min(candidate.surrounding_material_mm,
+                                    self._parameters.edge_margin_mm),
+                            ),
                         ))
                 states[(used, index)] = _pareto_layouts(options)
         finalists = []
         for index in range(len(ordered)):
             for state in states.get((count, index), ()):
-                indices, largest, smallest, deviation = state
+                indices, largest, smallest, deviation, minimum_local_quality = state
                 final_largest = max(largest, interval[1] - ordered[index].distance_mm)
+                quality_floor = (
+                    self._parameters.hole_diameter_mm / 2.0
+                    + self._parameters.material_margin_mm
+                )
+                quality_penalty = max(
+                    0.0, quality_floor - minimum_local_quality
+                )
                 signature = tuple(round(ordered[item].distance_mm, 9) for item in indices)
                 finalists.append((
-                    (final_largest, -smallest, deviation, signature),
+                    (
+                        final_largest + quality_penalty,
+                        -minimum_local_quality,
+                        -smallest,
+                        deviation,
+                        signature,
+                    ),
                     tuple(ordered[item] for item in indices),
                 ))
         return min(finalists, key=lambda item: item[0])[1] if finalists else ()
@@ -881,12 +934,15 @@ def _safe_interval_count(candidates, sampling_interval):
 def _pareto_layouts(options):
     """Retain deterministic non-dominated partial coverage layouts."""
     result = []
-    for candidate in sorted(options, key=lambda item: (item[1], -item[2], item[3], item[0])):
-        _indices, largest, smallest, deviation = candidate
+    for candidate in sorted(
+        options, key=lambda item: (item[1], -item[2], item[3], -item[4], item[0])
+    ):
+        _indices, largest, smallest, deviation, quality = candidate
         if any(
             prior[1] <= largest + _COORDINATE_TOLERANCE_MM
             and prior[2] >= smallest - _COORDINATE_TOLERANCE_MM
             and prior[3] <= deviation + _COORDINATE_TOLERANCE_MM
+            and prior[4] >= quality - _COORDINATE_TOLERANCE_MM
             for prior in result
         ):
             continue
@@ -897,6 +953,7 @@ def _pareto_layouts(options):
                 largest <= prior[1] + _COORDINATE_TOLERANCE_MM
                 and smallest >= prior[2] - _COORDINATE_TOLERANCE_MM
                 and deviation <= prior[3] + _COORDINATE_TOLERANCE_MM
+                and quality >= prior[4] - _COORDINATE_TOLERANCE_MM
             )
         ]
         result.append(candidate)

@@ -220,7 +220,26 @@ class LipBuilder:
                     pieces.append((rib, float(rib.Volume)))
         if not pieces:
             raise LipBuildError("Accepted seam plan contains no lip segments.")
-        return tuple(pieces)
+        # Union small deterministic batches before per-part mask clipping.
+        # This preserves the exact rib union while avoiding one expensive
+        # common/cut boolean for every sampled curve segment and every part.
+        batched = []
+        batch_size = 64
+        for start in range(0, len(pieces), batch_size):
+            shapes = tuple(item[0] for item in pieces[start:start + batch_size])
+            try:
+                shape = (
+                    shapes[0].multiFuse(shapes[1:])
+                    if len(shapes) > 1 else shapes[0]
+                )
+                try:
+                    shape = shape.removeSplitter()
+                except Exception:
+                    pass
+            except Exception as error:
+                raise LipBuildError("Unable to batch curved lip segments.") from error
+            batched.append((shape, float(shape.Volume)))
+        return tuple(batched)
 
     def _top_material_mask(self, solid, zmax, Part, Vector):
         """Extrude only coplanar ZMax faces, preserving openings and panel edges."""

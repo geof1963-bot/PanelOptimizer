@@ -182,7 +182,8 @@ class PanelOptimizerSplitPanelCommand:
                     f"{path.maximum_artificial_turn_before_deg:.2f} -> "
                     f"{path.maximum_artificial_turn_after_deg:.2f} deg, contour "
                     f"{path.contour_following_length_mm:.3f} mm "
-                    f"({path.contour_following_ratio:.1%})\n"
+                    f"({path.contour_following_ratio:.1%}), longest straight "
+                    f"{path.longest_straight_segment_mm:.3f} mm\n"
                 )
                 for report in path.hole_offset_reports:
                     FreeCAD.Console.PrintMessage(
@@ -218,6 +219,10 @@ class PanelOptimizerSplitPanelCommand:
                     dowel.bore_exits_artistic_opening
                     for dowel in selected_dowels
                 )
+                artistic_clearances = tuple(
+                    dowel.nearest_artistic_hole_clearance_mm
+                    for dowel in selected_dowels
+                )
                 rejection_reasons = tuple(sorted({
                     item.reason for item in branch.rejected_candidates
                 }))
@@ -227,6 +232,7 @@ class PanelOptimizerSplitPanelCommand:
                     f"{branch.target_fractions}, positions {positions}, "
                     f"spacing {branch.spacing_mm}, useful depths "
                     f"{useful_depths}, opening breakout {opening_breakouts}, fallback "
+                    f"artistic clearance {artistic_clearances}, "
                     f"{branch.used_two_dowel_fallback}, sampled "
                     f"{branch.sampled_point_count}, safe "
                     f"{branch.safe_candidate_count}, selected "

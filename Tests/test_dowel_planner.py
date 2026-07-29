@@ -15,7 +15,9 @@ try:
 except ImportError:  # pragma: no cover
     FreeCAD = Part = Vector = None
 
-from Core.DowelPlanner import DowelParameters, DowelPlanner, _candidate_distances
+from Core.DowelPlanner import (
+    DowelParameters, DowelPlanner, _Candidate, _candidate_distances,
+)
 from Core.Exceptions import DowelPlanningError
 from Core.MacroSplitCore import MacroSplitCore
 from Core.MeshPatchRebuilder import build_macro_mesh_parts
@@ -88,6 +90,32 @@ class DowelPlannerTests(unittest.TestCase):
             self.assertLessEqual(branch.largest_unsupported_span_mm, 110.0)
             self.assertTrue(branch.coverage_target_achieved)
             self.assertFalse(branch.spacing_exception)
+
+    def test_better_local_material_wins_over_slightly_better_spacing(self):
+        def candidate(distance, clearance):
+            return _Candidate(
+                distance,
+                (distance, 0.0, 2.5),
+                (1.0, 0.0),
+                distance / 100.0,
+                distance,
+                clearance,
+                15.0,
+            )
+
+        candidates = (
+            candidate(20.0, -2.0),
+            candidate(25.0, 10.0),
+            candidate(40.0, 10.0),
+            candidate(60.0, 10.0),
+            candidate(80.0, 10.0),
+        )
+        selected = DowelPlanner()._best_coverage_subset(
+            candidates, 4, 0.0, (0.0, 100.0)
+        )
+        distances = tuple(item.distance_mm for item in selected)
+        self.assertIn(25.0, distances)
+        self.assertNotIn(20.0, distances)
 
     def test_four_dowels_are_preferred_without_exceeding_branch_maximum(self):
         long_plan = DowelPlanner().plan(

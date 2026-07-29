@@ -214,6 +214,37 @@ class MacroSplitCore:
             # optional splitter cleanup is unavailable.
             pass
 
+        # Curved segmented cutters can leave detached intersection crumbs.
+        # Exclude only unprintable slivers when four substantial quadrant
+        # solids remain unambiguously; their count depends on how the two
+        # segmented seam envelopes meet at the shared center point.
+        try:
+            solids = tuple(sorted(
+                result.Solids, key=lambda solid: float(solid.Volume)
+            ))
+            sliver_limit = (
+                profile.bottom_width_mm
+                * profile.top_width_mm
+                * max(zmax - zmin, 1.0)
+            )
+            slivers = tuple(
+                solid for solid in solids
+                if float(solid.Volume) <= sliver_limit
+            )
+            quadrants = tuple(
+                solid for solid in solids
+                if float(solid.Volume) > sliver_limit * 1000.0
+            )
+            if (
+                panel_shape.isValid()
+                and len(quadrants) == 4
+                and len(slivers) == len(solids) - 4
+            ):
+                result = Part.makeCompound(quadrants)
+                cleanup_applied = True
+        except Exception:
+            pass
+
         try:
             if result.isNull():
                 raise SplitOperationError("Macro-based cut returned null geometry.")

@@ -87,6 +87,7 @@ class SeamPath2D:
     hole_offset_reports: tuple[HoleOffsetReport, ...] = ()
     contour_following_length_mm: float = 0.0
     contour_following_ratio: float = 0.0
+    longest_straight_segment_mm: float = 0.0
 
 
 @dataclass(frozen=True, slots=True)
@@ -168,6 +169,13 @@ class SinuousSeamPathFinder:
             "horizontal", nominal_y, nominal_x, (xmin, xmax, ymin, ymax), features
         )
         intersections = _intersection_count(vertical.points, horizontal.points)
+        self._diagnostics["initial_intersection_count"] = intersections
+        self._diagnostics["initial_vertical_features"] = len(
+            vertical.followed_feature_ids
+        )
+        self._diagnostics["initial_horizontal_features"] = len(
+            horizontal.followed_feature_ids
+        )
         if intersections != 1:
             # Keep the already-proven vertical detour and conservatively make
             # the second seam straight. A monotone vertical path kept straight
@@ -250,6 +258,48 @@ class SinuousSeamPathFinder:
         candidates = self.candidate_plans(plan, panel_bounds)
         if not candidates:
             return ()
+        fully_sinuous = tuple(
+            candidate for candidate in candidates
+            if _meaningfully_sinuous(candidate.vertical)
+            and _meaningfully_sinuous(candidate.horizontal)
+        )
+        if fully_sinuous:
+            best = fully_sinuous[0]
+            best_vertical = len(best.vertical.followed_feature_ids)
+            best_horizontal = len(best.horizontal.followed_feature_ids)
+            selected = [best]
+            categories = (
+                lambda item: (
+                    len(item.vertical.followed_feature_ids) < best_vertical
+                    and len(item.horizontal.followed_feature_ids) == best_horizontal
+                ),
+                lambda item: (
+                    len(item.vertical.followed_feature_ids) == best_vertical
+                    and len(item.horizontal.followed_feature_ids) < best_horizontal
+                ),
+                lambda item: (
+                    len(item.vertical.followed_feature_ids) < best_vertical
+                    and len(item.horizontal.followed_feature_ids) < best_horizontal
+                ),
+            )
+            for predicate in categories:
+                match = next(
+                    (item for item in fully_sinuous if predicate(item)), None
+                )
+                if match is not None and match not in selected:
+                    selected.append(match)
+            for candidate in fully_sinuous:
+                if candidate not in selected:
+                    selected.append(candidate)
+                if len(selected) >= 5:
+                    break
+            shortlist = tuple(selected[:5])
+            self._diagnostics["route_candidates_pruned"] = max(
+                0, len(candidates) - len(shortlist)
+            )
+            self._diagnostics["topology_shortlist_count"] = len(shortlist)
+            self._diagnostics["straight_fallback_excluded"] = 1
+            return shortlist
         best = candidates[0]
         selected = [best]
         categories = (
@@ -513,9 +563,11 @@ class SinuousSeamPathFinder:
                 break
         selected.sort(key=lambda item: item[3][0])
         assembled = self._assemble_feature_route(
-            selected, axis, nominal, travel_min, travel_max
+            selected, axis, nominal, center_other, travel_min, travel_max
         )
         if assembled is None:
+            key = f"{axis}_assembly_fallbacks"
+            self._diagnostics[key] = self._diagnostics.get(key, 0) + 1
             return self._straight_path(axis, nominal, panel_bounds)
         (
             raw_points, smoothed_points, followed, followed_bounds,
@@ -525,10 +577,12 @@ class SinuousSeamPathFinder:
         raw_compact = _deduplicate(tuple(raw_points))
         compact = _clean_open_path(
             tuple(smoothed_points),
-            self._parameters.path_simplify_tolerance_mm,
+            min(self._parameters.path_simplify_tolerance_mm, 0.20),
             self._parameters.maximum_artificial_turn_deg,
         )
         if not _strictly_monotone(compact, axis) or _self_intersects(compact):
+            key = f"{axis}_geometry_fallbacks"
+            self._diagnostics[key] = self._diagnostics.get(key, 0) + 1
             return self._straight_path(axis, nominal, panel_bounds)
         path_length = _polyline_length(compact)
         return SeamPath2D(
@@ -552,10 +606,15 @@ class SinuousSeamPathFinder:
             contour_following_ratio=(
                 contour_following_length / path_length if path_length > 0.0 else 0.0
             ),
+            longest_straight_segment_mm=max(
+                (_distance(first, second)
+                 for first, second in zip(compact, compact[1:])),
+                default=0.0,
+            ),
         )
 
     def _assemble_feature_route(
-        self, selected, axis, nominal, travel_min, travel_max
+        self, selected, axis, nominal, center_other, travel_min, travel_max
     ):
         """Join successive contours directly, using the nominal line only as fallback."""
         start = self._point(axis, nominal, travel_min)
@@ -577,6 +636,15 @@ class SinuousSeamPathFinder:
                 curve = self._smooth_transition(
                     entry, chain[0], axis_tangent, entry_tangent, axis
                 )
+                if curve is None and _distance(entry, start) > _COORDINATE_TOLERANCE_MM:
+                    # A feature close to the panel edge can leave too little
+                    # run for its steep contour tangent.  Use the available
+                    # edge-to-feature distance as the deterministic curved
+                    # approach instead of discarding the whole sinuous axis.
+                    entry = start
+                    curve = self._smooth_transition(
+                        entry, chain[0], axis_tangent, entry_tangent, axis
+                    )
                 if curve is None:
                     continue
                 smoothed.append(entry)
@@ -593,7 +661,7 @@ class SinuousSeamPathFinder:
             else:
                 exit_tangent = _unit_direction(previous_chain[-2], previous_chain[-1])
                 bridge = self._hole_to_hole_bridge(
-                    accepted[-1], item, axis, nominal
+                    accepted[-1], item, axis, nominal, center_other
                 )
                 if bridge is not None:
                     bridge_points, bridge_raw, bridge_turns = bridge
@@ -700,7 +768,9 @@ class SinuousSeamPathFinder:
             artificial_after,
         )
 
-    def _hole_to_hole_bridge(self, previous_item, item, axis, nominal):
+    def _hole_to_hole_bridge(
+        self, previous_item, item, axis, nominal, center_other
+    ):
         """Join contours through a displaced guide, without returning to nominal."""
         previous_chain, chain = previous_item[4], item[4]
         travel = lambda point: point.y_mm if axis == "vertical" else point.x_mm
@@ -708,6 +778,44 @@ class SinuousSeamPathFinder:
         gap = travel(chain[0]) - travel(previous_chain[-1])
         if gap <= _COORDINATE_TOLERANCE_MM:
             return None
+        if (
+            travel(previous_chain[-1]) < center_other
+            < travel(chain[0])
+        ):
+            # Opposite branch features must meet the other seam at one shared,
+            # deterministic nominal point.  Two Hermite curves keep this long
+            # central connection flowing while preventing the independently
+            # bowed axis bridges from producing extra intersections.
+            center = self._point(axis, nominal, center_other)
+            exit_tangent = _unit_direction(
+                previous_chain[-2], previous_chain[-1]
+            )
+            entry_tangent = _unit_direction(chain[0], chain[1])
+            first_curve = self._smooth_transition(
+                previous_chain[-1], center, exit_tangent,
+                self._axis_tangent(axis), axis,
+            )
+            second_curve = self._smooth_transition(
+                center, chain[0], self._axis_tangent(axis),
+                entry_tangent, axis,
+            )
+            if first_curve is None or second_curve is None:
+                return None
+            turns = (
+                _transition_curve_angles(
+                    (previous_chain[-1],) + first_curve,
+                    exit_tangent, self._axis_tangent(axis),
+                )
+                + _transition_curve_angles(
+                    (center,) + second_curve,
+                    self._axis_tangent(axis), entry_tangent,
+                )
+            )
+            return (
+                first_curve + second_curve,
+                (center, chain[0]),
+                turns,
+            )
         maximum_offset = max(
             previous_item[6].maximum_offset_mm,
             item[6].maximum_offset_mm,
@@ -737,9 +845,33 @@ class SinuousSeamPathFinder:
             second_anchor, chain[0], self._axis_tangent(axis),
             entry_tangent, axis,
         )
-        if first_curve is None or second_curve is None:
+        midpoint_travel = 0.5 * (
+            travel(first_anchor) + travel(second_anchor)
+        )
+        sign = 1.0 if guide >= nominal else -1.0
+        outward_room = max(
+            0.0,
+            self._parameters.search_corridor_mm - abs(guide - nominal),
+        )
+        bow = min(28.0, gap * 0.12, outward_room)
+        if bow <= _COORDINATE_TOLERANCE_MM:
+            sign = -sign
+            bow = min(28.0, gap * 0.12, abs(guide - nominal))
+        midpoint = self._point(axis, guide + sign * bow, midpoint_travel)
+        middle_first = self._smooth_transition(
+            first_anchor, midpoint, self._axis_tangent(axis),
+            self._axis_tangent(axis), axis,
+        )
+        middle_second = self._smooth_transition(
+            midpoint, second_anchor, self._axis_tangent(axis),
+            self._axis_tangent(axis), axis,
+        )
+        if (
+            first_curve is None or second_curve is None
+            or middle_first is None or middle_second is None
+        ):
             return None
-        points = first_curve + (second_anchor,) + second_curve
+        points = first_curve + middle_first + middle_second + second_curve
         turns = (
             _transition_curve_angles(
                 (previous_chain[-1],) + first_curve,
@@ -752,7 +884,7 @@ class SinuousSeamPathFinder:
                 entry_tangent,
             )
         )
-        return points, (first_anchor, second_anchor, chain[0]), turns
+        return points, (first_anchor, midpoint, second_anchor, chain[0]), turns
 
     def _smooth_transition(
         self, first, last, first_tangent, last_tangent, axis
@@ -770,7 +902,13 @@ class SinuousSeamPathFinder:
             return (last,)
         for tangent_factor in (0.5, 0.35, 0.2, 0.1):
             derivative_scale = chord * tangent_factor
-            for subdivisions in (4, 8, 16, 32):
+            minimum_subdivisions = max(4, int(math.ceil(chord / 20.0)))
+            for subdivisions in tuple(sorted({
+                minimum_subdivisions,
+                max(8, minimum_subdivisions),
+                max(16, minimum_subdivisions),
+                max(32, minimum_subdivisions),
+            })):
                 points = [first]
                 for index in range(1, subdivisions + 1):
                     value = index / subdivisions
@@ -1074,6 +1212,7 @@ class SinuousSeamPathFinder:
             0.0,
             segment_count_before_cleanup=1,
             segment_count_after_cleanup=1,
+            longest_straight_segment_mm=_polyline_length(points),
         )
 
     @staticmethod
@@ -1116,6 +1255,21 @@ class SinuousSeamPathFinder:
 
 def _distance(first: Point2D, second: Point2D) -> float:
     return math.hypot(first.x_mm - second.x_mm, first.y_mm - second.y_mm)
+
+
+def _meaningfully_sinuous(path: SeamPath2D) -> bool:
+    """Require a followed feature, lateral deviation, and multiple turns."""
+    if not path.followed_feature_ids or path.maximum_deviation_mm <= 0.5:
+        return False
+    directions = tuple(
+        _unit_direction(first, second)
+        for first, second in zip(path.points, path.points[1:])
+    )
+    changes = sum(
+        _turn_angle_deg(first, second) > 1.0
+        for first, second in zip(directions, directions[1:])
+    )
+    return changes > 1
 
 
 def _unit_direction(first: Point2D, second: Point2D) -> tuple[float, float]:
@@ -1568,9 +1722,42 @@ def _self_intersects(points: tuple[Point2D, ...]) -> bool:
 
 
 def _intersection_count(vertical, horizontal) -> int:
-    intersections = 0
+    intersections = []
     for first in range(len(vertical) - 1):
         for second in range(len(horizontal) - 1):
-            if _segments_intersect(vertical[first], vertical[first + 1], horizontal[second], horizontal[second + 1]):
-                intersections += 1
-    return intersections
+            point = _segment_intersection_point(
+                vertical[first], vertical[first + 1],
+                horizontal[second], horizontal[second + 1],
+            )
+            if point is not None and not any(
+                _distance(point, existing) <= _COORDINATE_TOLERANCE_MM
+                for existing in intersections
+            ):
+                intersections.append(point)
+    return len(intersections)
+
+
+def _segment_intersection_point(first, second, third, fourth):
+    """Return one XY intersection, coalescing a shared polyline vertex."""
+    if not _segments_intersect(first, second, third, fourth):
+        return None
+    rx = second.x_mm - first.x_mm
+    ry = second.y_mm - first.y_mm
+    sx = fourth.x_mm - third.x_mm
+    sy = fourth.y_mm - third.y_mm
+    denominator = rx * sy - ry * sx
+    if abs(denominator) > _COORDINATE_TOLERANCE_MM:
+        qpx = third.x_mm - first.x_mm
+        qpy = third.y_mm - first.y_mm
+        ratio = (qpx * sy - qpy * sx) / denominator
+        return Point2D(first.x_mm + ratio * rx, first.y_mm + ratio * ry)
+    for one in (first, second):
+        for two in (third, fourth):
+            if _distance(one, two) <= _COORDINATE_TOLERANCE_MM:
+                return one
+    return Point2D(
+        0.5 * (max(min(first.x_mm, second.x_mm), min(third.x_mm, fourth.x_mm))
+               + min(max(first.x_mm, second.x_mm), max(third.x_mm, fourth.x_mm))),
+        0.5 * (max(min(first.y_mm, second.y_mm), min(third.y_mm, fourth.y_mm))
+               + min(max(first.y_mm, second.y_mm), max(third.y_mm, fourth.y_mm))),
+    )
