@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import os
+import time
 
 import FreeCAD
 import FreeCADGui
@@ -58,12 +59,16 @@ class PanelOptimizerSplitPanelCommand:
             self._error("PanelOptimizer: no active document.")
             return
 
+        timings = {}
+        total_started = time.perf_counter()
+        interactive_wait = 0.0
         try:
             source_object = validate_single_selection(
                 FreeCADGui.Selection.getSelection()
             )
             self._validate_seam_preview_names(document)
             path_finder = SinuousSeamPathFinder()
+            started = time.perf_counter()
             proposed_plan = path_finder.generate(
                 source_object.Shape,
                 self._vertical_offset,
@@ -74,10 +79,13 @@ class PanelOptimizerSplitPanelCommand:
                 float(bounds.XMin), float(bounds.XMax),
                 float(bounds.YMin), float(bounds.YMax),
             )
+            candidate_plans = tuple(
+                path_finder.candidate_plans(proposed_plan, panel_bounds)
+            )
+            timings["seams"] = time.perf_counter() - started
             macro_result = None
-            for candidate in path_finder.candidate_plans(
-                proposed_plan, panel_bounds
-            ):
+            started = time.perf_counter()
+            for candidate in candidate_plans:
                 attempt = MacroSplitCore().cut(
                     source_object.Shape,
                     self._vertical_offset,
@@ -88,11 +96,19 @@ class PanelOptimizerSplitPanelCommand:
                 if attempt.solid_count == 4:
                     macro_result = attempt
                     break
+            timings["split"] = time.perf_counter() - started
             if macro_result is None:
                 raise PanelOptimizerError(
                     "No seam candidate produced exactly four parts."
                 )
-            dowel_application = DowelPlanner().apply(macro_result)
+            planner = DowelPlanner()
+            started = time.perf_counter()
+            dowel_plan = planner.plan(macro_result)
+            timings["dowel_plan"] = time.perf_counter() - started
+            started = time.perf_counter()
+            dowel_application = planner.apply(macro_result, dowel_plan)
+            timings["dowel_cut"] = time.perf_counter() - started
+            started = time.perf_counter()
             lip_application = LipBuilder(
                 LipParameters(
                     groove_top_width_mm=self._parameters.top_width_mm,
@@ -101,8 +117,9 @@ class PanelOptimizerSplitPanelCommand:
                 dowel_application.macro_result,
                 dowel_cutters=dowel_application.cutters,
             )
+            timings["lips"] = time.perf_counter() - started
             macro_result = lip_application.macro_result
-            mesh_parts = build_macro_mesh_parts(macro_result)
+            mesh_parts = build_macro_mesh_parts(macro_result, timings=timings)
             extraction = MacroPartExtractor().extract(
                 macro_result,
                 str(source_object.Name),
@@ -117,12 +134,17 @@ class PanelOptimizerSplitPanelCommand:
                 document,
                 macro_result.seam_plan,
                 float(bounds.ZMax) + 0.1,
+                recompute=False,
             )
             self._write_dowel_preview(
                 document,
                 dowel_application.cutters,
+                recompute=False,
             )
-            self._write_lip_preview(document, lip_application.preview_shape)
+            self._write_lip_preview(
+                document, lip_application.preview_shape, recompute=False
+            )
+            document.recompute()
             FreeCAD.Console.PrintMessage(
                 "PanelOptimizer\n"
                 f"Source: {source_object.Name}\n"
@@ -161,7 +183,10 @@ class PanelOptimizerSplitPanelCommand:
                     f"{branch.sampled_point_count}, safe "
                     f"{branch.safe_candidate_count}, selected "
                     f"{len(branch.accepted_dowel_ids)}, rejected geometry "
-                    f"{branch.rejected_geometry_counts or rejection_reasons}\n"
+                    f"{branch.rejected_geometry_counts or rejection_reasons}, "
+                    f"cheap {branch.cheap_candidate_count}, shortlist "
+                    f"{branch.shortlisted_candidate_count}, exact "
+                    f"{branch.exact_validation_count}\n"
                 )
             for report in lip_application.reports:
                 FreeCAD.Console.PrintMessage(
@@ -200,17 +225,25 @@ class PanelOptimizerSplitPanelCommand:
                     )
                 )
                 return
+            wait_started = time.perf_counter()
             output_directory = self._select_output_directory()
+            interactive_wait += time.perf_counter() - wait_started
             if not output_directory:
                 FreeCAD.Console.PrintWarning(
                     "PanelOptimizer: STL export cancelled; four result solids "
                     "remain in PanelOptimizer_Result.\n"
                 )
+                timings["total"] = time.perf_counter() - total_started - interactive_wait
+                self._print_performance(timings)
                 return
-            artifacts = export_mesh_parts(mesh_parts, output_directory)
+            artifacts = export_mesh_parts(
+                mesh_parts, output_directory, timings=timings
+            )
+            timings["total"] = time.perf_counter() - total_started - interactive_wait
             FreeCAD.Console.PrintMessage(
                 f"{len(artifacts)} STL files exported.\n"
             )
+            self._print_performance(timings)
         except PanelOptimizerError as error:
             self._error(f"PanelOptimizer: {error}")
         except Exception as error:
@@ -253,7 +286,9 @@ class PanelOptimizerSplitPanelCommand:
             )
 
     @staticmethod
-    def _write_seam_previews(document, seam_plan, z_value) -> tuple[object, object]:
+    def _write_seam_previews(
+        document, seam_plan, z_value, recompute=True
+    ) -> tuple[object, object]:
         """Create or update two owned lightweight Part polyline previews."""
         import Part
 
@@ -287,11 +322,12 @@ class PanelOptimizerSplitPanelCommand:
             output.Shape = Part.makePolygon(vectors)
             output.Label = name
             previews.append(output)
-        document.recompute()
+        if recompute:
+            document.recompute()
         return tuple(previews)
 
     @staticmethod
-    def _write_dowel_preview(document, cutters) -> object:
+    def _write_dowel_preview(document, cutters, recompute=True) -> object:
         """Create or update one owned lightweight compound of planned holes."""
         import Part
 
@@ -319,11 +355,12 @@ class PanelOptimizerSplitPanelCommand:
         if view is not None:
             view.ShapeColor = (0.95, 0.65, 0.10)
             view.Transparency = 65
-        document.recompute()
+        if recompute:
+            document.recompute()
         return output
 
     @staticmethod
-    def _write_lip_preview(document, preview_shape) -> object:
+    def _write_lip_preview(document, preview_shape, recompute=True) -> object:
         """Create or update the owned lightweight V4.50 lip compound."""
         name = "PanelOptimizer_Lips"
         output = document.getObject(name)
@@ -349,8 +386,26 @@ class PanelOptimizerSplitPanelCommand:
         if view is not None:
             view.ShapeColor = (0.20, 0.75, 0.95)
             view.Transparency = 25
-        document.recompute()
+        if recompute:
+            document.recompute()
         return output
+
+    @staticmethod
+    def _print_performance(timings) -> None:
+        """Print one concise V4.61 stage report in seconds."""
+        FreeCAD.Console.PrintMessage(
+            "PanelOptimizer Performance\n"
+            f"Seams: {timings.get('seams', 0.0):.3f} s\n"
+            f"Split: {timings.get('split', 0.0):.3f} s\n"
+            f"Dowels plan: {timings.get('dowel_plan', 0.0):.3f} s\n"
+            f"Dowels cut: {timings.get('dowel_cut', 0.0):.3f} s\n"
+            f"Lips: {timings.get('lips', 0.0):.3f} s\n"
+            f"Mesh: {timings.get('mesh', 0.0):.3f} s\n"
+            f"Mesh repair: {timings.get('mesh_repair', 0.0):.3f} s\n"
+            f"STL export: {timings.get('stl_export', 0.0):.3f} s\n"
+            f"STL verify: {timings.get('stl_verify', 0.0):.3f} s\n"
+            f"Total: {timings.get('total', 0.0):.3f} s\n"
+        )
 
     @staticmethod
     def _select_output_directory() -> str:

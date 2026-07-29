@@ -61,6 +61,13 @@ class LipSettings:
 
 
 @dataclass(frozen=True)
+class PerformanceSettings:
+    """Interactive performance switches; safety validation stays enabled."""
+
+    FULL_STL_REOPEN_VALIDATION: bool = True
+
+
+@dataclass(frozen=True)
 class SplitSettings:
     """Split engine constraints."""
 
@@ -152,6 +159,8 @@ class Settings:
     Joinery = JoinerySettings()
 
     Lips = LipSettings()
+
+    Performance = PerformanceSettings()
 
     Split = SplitSettings()
 

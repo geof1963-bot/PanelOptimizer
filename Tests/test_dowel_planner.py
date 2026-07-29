@@ -81,6 +81,8 @@ class DowelPlannerTests(unittest.TestCase):
             self.assertTrue(all(value >= 60.0 for value in branch.spacing_mm))
             self.assertGreater(branch.safe_candidate_count, 3)
             self.assertEqual(branch.sampled_point_count, branch.safe_candidate_count)
+            self.assertEqual(branch.cheap_candidate_count, branch.sampled_point_count)
+            self.assertLessEqual(branch.exact_validation_count, 3)
 
     def test_safe_pool_is_independent_of_selected_spacing(self):
         plan = DowelPlanner().plan(self._macro(Part.makeBox(300.0, 300.0, 8.0)))
@@ -97,7 +99,7 @@ class DowelPlannerTests(unittest.TestCase):
         solids, bounds = planner._ordered_solids_and_bounds(macro)
         branch = planner._branches(macro)[0]
         interval = planner._usable_interval(branch, bounds, (297.0, 297.0))
-        original = planner._candidate_reason
+        original = planner._cheap_candidate_reason
 
         def evidence_window(result, parts, panel_bounds, current, center, tangent, occupied):
             if 30.0 <= center[1] <= 56.0:
@@ -107,7 +109,7 @@ class DowelPlannerTests(unittest.TestCase):
             return "fixture exclusion outside V4.40 evidence window"
 
         with patch.object(
-            planner, "_candidate_reason", side_effect=evidence_window
+            planner, "_cheap_candidate_reason", side_effect=evidence_window
         ):
             candidates, _rejections, sampled, spacing = (
                 planner._safe_candidate_pool(
@@ -119,6 +121,55 @@ class DowelPlannerTests(unittest.TestCase):
         self.assertIn(spacing, (5.0, 2.5))
         selected, _targets = planner._select_safe_subset(candidates, interval)
         self.assertEqual(len(selected), 2)
+
+    def test_exact_brep_validation_runs_only_on_selected_shortlist(self):
+        planner = DowelPlanner()
+        macro = self._macro(Part.makeBox(594.0, 594.0, 8.0))
+        original = planner._exact_candidate_reason
+        calls = []
+
+        def counted(*args, **kwargs):
+            calls.append(args[3])
+            return original(*args, **kwargs)
+
+        with patch.object(planner, "_exact_candidate_reason", side_effect=counted):
+            plan = planner.plan(macro)
+        self.assertEqual(len(calls), 12)
+        self.assertEqual(
+            len(calls), sum(branch.exact_validation_count for branch in plan.branches)
+        )
+        self.assertLess(len(calls), sum(branch.sampled_point_count for branch in plan.branches))
+
+    def test_cheap_prefilter_has_no_false_negative_against_exact_logic(self):
+        planner = DowelPlanner()
+        macro = self._macro(Part.makeBox(100.0, 100.0, 8.0))
+        solids, bounds = planner._ordered_solids_and_bounds(macro)
+        branch = planner._branches(macro)[0]
+        interval = planner._usable_interval(branch, bounds, (50.0, 50.0))
+        for distance in (interval[0], sum(interval) / 2.0, interval[1]):
+            from Core.DowelPlanner import _point_and_tangent
+            point, tangent = _point_and_tangent(branch.points, distance)
+            center = (point[0], point[1], 2.5)
+            exact = planner._candidate_reason(
+                macro, solids, bounds, branch, center, tangent, ()
+            )
+            cheap = planner._cheap_candidate_reason(
+                macro, solids, bounds, branch, center, tangent, ()
+            )
+            if exact is None:
+                self.assertIsNone(cheap)
+
+    def test_fixture_dowel_coordinates_are_unchanged(self):
+        plan = DowelPlanner().plan(self._macro(Part.makeBox(594.0, 594.0, 8.0)))
+        self.assertEqual(
+            tuple((round(item.center_xyz_mm[0], 6), round(item.center_xyz_mm[1], 6)) for item in plan.dowels),
+            (
+                (297.0, 15.0), (297.0, 145.0), (297.0, 277.0),
+                (297.0, 317.0), (297.0, 447.0), (297.0, 579.0),
+                (15.0, 297.0), (145.0, 297.0), (277.0, 297.0),
+                (317.0, 297.0), (447.0, 297.0), (579.0, 297.0),
+            ),
+        )
 
     def test_relocation_order_is_symmetric_around_target(self):
         self.assertEqual(
@@ -238,6 +289,23 @@ class DowelPlannerTests(unittest.TestCase):
                 if index not in intended
             ))
         self.assertGreater(application.removed_volume_mm3, 0.0)
+
+    def test_apply_reuses_exactly_validated_cutters(self):
+        planner = DowelPlanner()
+        macro = self._macro(Part.makeBox(100.0, 100.0, 8.0))
+        original = planner._cutter
+        calls = []
+
+        def counted(*args, **kwargs):
+            calls.append(args)
+            return original(*args, **kwargs)
+
+        with patch.object(planner, "_cutter", side_effect=counted):
+            plan = planner.plan(macro)
+            after_plan = len(calls)
+            application = planner.apply(macro, plan)
+        self.assertEqual(len(application.cutters), len(plan.dowels))
+        self.assertEqual(len(calls), after_plan)
 
     def test_drilled_parts_remain_watertight_and_dowel_cavities_are_not_capped(self):
         source = Part.makeBox(200.0, 200.0, 8.0)

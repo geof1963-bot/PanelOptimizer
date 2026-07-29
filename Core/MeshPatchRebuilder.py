@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import math
 import os
+import time
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -245,7 +246,7 @@ def mesh_metrics(mesh: object) -> MeshMetrics:
 class MeshPatchRebuilder:
     """Tessellate one closed part and reconstruct only planar mesh gaps."""
 
-    def rebuild(self, source_shape: object) -> tuple[object, MeshMetrics, MeshMetrics, tuple[MeshPatchObservation, ...], int, int, float]:
+    def rebuild(self, source_shape: object, timings: dict | None = None) -> tuple[object, MeshMetrics, MeshMetrics, tuple[MeshPatchObservation, ...], int, int, float]:
         """Return one validated watertight mesh without changing the B-rep."""
         try:
             if (
@@ -260,6 +261,7 @@ class MeshPatchRebuilder:
             source_bounds = source_shape.BoundBox
             import MeshPart
 
+            started = time.perf_counter()
             mesh = MeshPart.meshFromShape(
                 Shape=source_shape,
                 LinearDeflection=LINEAR_DEFLECTION_MM,
@@ -267,11 +269,19 @@ class MeshPatchRebuilder:
                 Relative=RELATIVE_DEFLECTION,
             )
             _clean_mesh(mesh)
+            if timings is not None:
+                timings["mesh"] = timings.get("mesh", 0.0) + time.perf_counter() - started
         except SplitOperationError:
             raise
         except Exception as error:
             raise SplitOperationError("Unable to tessellate the V4.21 part.") from error
-        return self.rebuild_mesh(mesh, source_shape)
+        started = time.perf_counter()
+        result = self.rebuild_mesh(mesh, source_shape)
+        if timings is not None:
+            timings["mesh_repair"] = (
+                timings.get("mesh_repair", 0.0) + time.perf_counter() - started
+            )
+        return result
 
     def rebuild_mesh(self, mesh: object, source_shape: object):
         """Reconstruct supported local patches in an existing transient mesh.
@@ -683,6 +693,7 @@ class MeshPatchRebuilder:
 def build_macro_mesh_parts(
     macro_result: MacroSplitResult,
     split_settings: object = Settings.Split,
+    timings: dict | None = None,
 ) -> tuple[MeshPartResult, ...]:
     """Classify and rebuild the four closed solids produced by V4.21."""
     if not isinstance(macro_result, MacroSplitResult):
@@ -718,7 +729,7 @@ def build_macro_mesh_parts(
     rebuilder = MeshPatchRebuilder()
     results = []
     for name, quadrant, solid in zip(PART_NAMES, QUADRANTS, ordered):
-        rebuilt = rebuilder.rebuild(solid)
+        rebuilt = rebuilder.rebuild(solid, timings=timings)
         mesh, before, after, patches, triangles, vertices, movement = rebuilt
         within_x = after.size_mm[0] <= maximum_width
         within_y = after.size_mm[1] <= maximum_height
@@ -747,6 +758,8 @@ def build_macro_mesh_parts(
 def export_mesh_parts(
     parts: tuple[MeshPartResult, ...],
     output_directory: str,
+    timings: dict | None = None,
+    full_reopen_validation: bool = Settings.Performance.FULL_STL_REOPEN_VALIDATION,
 ) -> tuple[MeshExportArtifact, ...]:
     """Transactionally export and reopen exactly four validated mesh parts."""
     ordered = tuple(parts)
@@ -779,9 +792,18 @@ def export_mesh_parts(
             if path.exists():
                 path.unlink()
         for part, path in zip(ordered, temporaries):
+            started = time.perf_counter()
             part.mesh.write(str(path))
             if not path.is_file() or path.stat().st_size <= 0:
                 raise STLExportError(f"STL export produced no data for {part.name}.")
+            if timings is not None:
+                timings["stl_export"] = (
+                    timings.get("stl_export", 0.0) + time.perf_counter() - started
+                )
+            if not full_reopen_validation:
+                reopened_metrics.append(part.after)
+                continue
+            started = time.perf_counter()
             reopened = Mesh.Mesh(str(path))
             _clean_mesh(reopened)
             metrics = mesh_metrics(reopened)
@@ -802,6 +824,10 @@ def export_mesh_parts(
                     f"Reopened STL bounds changed for {part.name}."
                 )
             reopened_metrics.append(metrics)
+            if timings is not None:
+                timings["stl_verify"] = (
+                    timings.get("stl_verify", 0.0) + time.perf_counter() - started
+                )
     except Exception as error:
         _remove_files(temporaries)
         if isinstance(error, (ExportError, STLExportError)):

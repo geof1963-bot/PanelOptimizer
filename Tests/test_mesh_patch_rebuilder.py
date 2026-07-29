@@ -168,6 +168,23 @@ class MeshPatchRebuilderTests(unittest.TestCase):
             self.assertTrue(all(item.byte_count > 0 for item in artifacts))
             self.assertTrue(all(item.reopened.is_solid for item in artifacts))
 
+    def test_each_final_part_is_tessellated_once_and_stage_times_are_recorded(self):
+        macro = MacroSplitCore().cut(Part.makeBox(100.0, 80.0, 8.0))
+        original = MeshPatchRebuilder.rebuild
+        calls = []
+
+        def counted(rebuilder, source_shape, timings=None):
+            calls.append(source_shape)
+            return original(rebuilder, source_shape, timings=timings)
+
+        timings = {}
+        with patch.object(MeshPatchRebuilder, "rebuild", new=counted):
+            parts = build_macro_mesh_parts(macro, timings=timings)
+        self.assertEqual(len(parts), 4)
+        self.assertEqual(len(calls), 4)
+        self.assertGreaterEqual(timings["mesh"], 0.0)
+        self.assertGreaterEqual(timings["mesh_repair"], 0.0)
+
     def test_limits_block_export_and_commit_failure_restores_previous_set(self):
         source = Part.makeBox(100.0, 80.0, 8.0)
         macro = MacroSplitCore().cut(source)

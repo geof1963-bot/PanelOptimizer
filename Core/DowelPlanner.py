@@ -100,6 +100,9 @@ class SeamBranchPlan:
     safe_candidate_count: int = 0
     rejected_geometry_counts: tuple[tuple[str, int], ...] = ()
     sampling_interval_mm: float = 5.0
+    cheap_candidate_count: int = 0
+    shortlisted_candidate_count: int = 0
+    exact_validation_count: int = 0
 
 
 @dataclass(frozen=True, slots=True)
@@ -142,9 +145,11 @@ class DowelPlanner:
 
     def __init__(self, parameters: DowelParameters = DowelParameters()) -> None:
         self._parameters = self._validate_parameters(parameters)
+        self._validated_cutters = {}
 
     def plan(self, macro_result: MacroSplitResult) -> DowelPlan:
         """Return a safe deterministic plan without modifying any input shape."""
+        self._validated_cutters = {}
         solids, bounds = self._ordered_solids_and_bounds(macro_result)
         branches = self._branches(macro_result)
         z_value = bounds[4] + self._parameters.axis_height_mm
@@ -174,9 +179,20 @@ class DowelPlanner:
                     occupied,
                 )
             )
-            chosen_candidates, actual_targets = self._select_safe_subset(
-                candidates, usable_interval
+            cheap_candidate_count = len(candidates)
+            (
+                chosen_candidates,
+                actual_targets,
+                exact_results,
+                exact_rejections,
+            ) = self._validated_safe_subset(
+                candidates,
+                usable_interval,
+                branch,
+                macro_result,
+                solids,
             )
+            rejections = tuple(rejections) + tuple(exact_rejections)
             used_fallback = (
                 self._parameters.target_per_branch >= 3
                 and len(chosen_candidates) == 2
@@ -206,6 +222,16 @@ class DowelPlanner:
                 branch_dowels.append(record)
                 accepted.append(record)
                 occupied.append(center[:2])
+                exact_reason, cutter = exact_results[
+                    round(candidate.distance_mm, 9)
+                ]
+                if exact_reason is not None:
+                    raise DowelPlanningError(
+                        f"Selected candidate for {dowel_id} was not exact-safe."
+                    )
+                self._validated_cutters[
+                    self._cutter_cache_key(center, axis)
+                ] = cutter
             if len(branch_dowels) < self._parameters.minimum_per_branch:
                 reasons = sorted({item.reason for item in rejections})
                 raise DowelPlanningError(
@@ -237,9 +263,16 @@ class DowelPlanner:
                         - _COORDINATE_TOLERANCE_MM
                     ),
                     sampled_point_count=sampled_count,
-                    safe_candidate_count=len(candidates),
+                    # Cheap filtering is conservative; subtract any false
+                    # positives discovered while exact-checking the shortlist.
+                    safe_candidate_count=cheap_candidate_count - sum(
+                        reason is not None for reason, _cutter in exact_results.values()
+                    ),
                     rejected_geometry_counts=_rejection_counts(rejections),
                     sampling_interval_mm=sampling_interval,
+                    cheap_candidate_count=cheap_candidate_count,
+                    shortlisted_candidate_count=len(exact_results),
+                    exact_validation_count=len(exact_results),
                 )
             )
         return DowelPlan(tuple(accepted), tuple(branch_results))
@@ -283,7 +316,7 @@ class DowelPlanner:
         z_value,
         occupied,
     ):
-        """Scan the complete usable interval and retain every safe candidate."""
+        """Scan the complete interval using only conservative cheap checks."""
         start, end = interval
         sampled = list(_sample_distances(start, end, 5.0))
         candidates = []
@@ -292,7 +325,7 @@ class DowelPlanner:
         def evaluate(distance):
             point, tangent = _point_and_tangent(branch.points, distance)
             center = (point[0], point[1], z_value)
-            reason = self._candidate_reason(
+            reason = self._cheap_candidate_reason(
                 macro_result,
                 solids,
                 bounds,
@@ -342,6 +375,55 @@ class DowelPlanner:
             len(sampled),
             sampling_interval,
         )
+
+    def _validated_safe_subset(
+        self, candidates, interval, branch, macro_result, solids
+    ):
+        """Lazily exact-check only candidates that can win subset selection.
+
+        The cheap phase has no intentional false negatives.  Consequently, if
+        the best subset in the current superset passes exact validation, no
+        unvalidated subset can outrank it.  Failed candidates are removed and
+        the deterministic selection is repeated.
+        """
+        remaining = list(candidates)
+        exact_results = {}
+        rejections = []
+        while len(remaining) >= self._parameters.minimum_per_branch:
+            selected, targets = self._select_safe_subset(tuple(remaining), interval)
+            if not selected:
+                break
+            failed_distances = set()
+            for candidate in selected:
+                key = round(candidate.distance_mm, 9)
+                if key not in exact_results:
+                    exact_results[key] = self._exact_candidate_reason(
+                        macro_result,
+                        solids,
+                        branch,
+                        candidate.center_xyz_mm,
+                        candidate.tangent_xy,
+                    )
+                reason, _cutter = exact_results[key]
+                if reason is not None:
+                    failed_distances.add(key)
+                    rejections.append(
+                        DowelRejection(
+                            branch.branch_id,
+                            candidate.target_fraction,
+                            candidate.center_xyz_mm,
+                            reason,
+                            branch_distance_mm=candidate.distance_mm,
+                        )
+                    )
+            if not failed_distances:
+                return selected, targets, exact_results, tuple(rejections)
+            remaining = [
+                candidate
+                for candidate in remaining
+                if round(candidate.distance_mm, 9) not in failed_distances
+            ]
+        return (), (), exact_results, tuple(rejections)
 
     def _select_safe_subset(self, candidates, interval):
         """Apply spacing only after geometry-safe candidates are known."""
@@ -412,7 +494,11 @@ class DowelPlanner:
         cutters = []
         before = sum(float(solid.Volume) for solid in drilled)
         for dowel in chosen.dowels:
-            cutter = self._cutter(dowel.center_xyz_mm, dowel.axis_xy)
+            cutter = self._validated_cutters.get(
+                self._cutter_cache_key(dowel.center_xyz_mm, dowel.axis_xy)
+            )
+            if cutter is None:
+                cutter = self._cutter(dowel.center_xyz_mm, dowel.axis_xy)
             cutters.append(cutter)
             for name in dowel.intended_part_names:
                 index = name_to_index[name]
@@ -446,6 +532,21 @@ class DowelPlanner:
     def _candidate_reason(
         self, macro_result, solids, bounds, branch, center, tangent, occupied
     ) -> str | None:
+        """Compatibility helper performing both planning validation phases."""
+        reason = self._cheap_candidate_reason(
+            macro_result, solids, bounds, branch, center, tangent, occupied
+        )
+        if reason is not None:
+            return reason
+        reason, _cutter = self._exact_candidate_reason(
+            macro_result, solids, branch, center, tangent
+        )
+        return reason
+
+    def _cheap_candidate_reason(
+        self, macro_result, solids, bounds, branch, center, tangent, occupied
+    ) -> str | None:
+        """Reject obvious failures without constructing or cutting a BRep."""
         x_value, y_value, _ = center
         xmin, xmax, ymin, ymax, _, _ = bounds
         if min(x_value - xmin, xmax - x_value, y_value - ymin, ymax - y_value) < self._parameters.edge_margin_mm:
@@ -471,6 +572,37 @@ class DowelPlanner:
             points = tuple((point.x_mm, point.y_mm) for point in feature.points)
             if _segment_polyline_distance(first, second, points) < clearance:
                 return f"opening margin ({feature.feature_id})"
+
+        # A bounding-box miss proves insufficient local material and is safe to
+        # reject.  Overlap is deliberately inconclusive and left to exact BRep
+        # validation, avoiding false negatives around irregular panel forms.
+        radius = self._parameters.hole_diameter_mm / 2.0
+        segment_bounds = (
+            min(first[0], second[0]) - radius,
+            max(first[0], second[0]) + radius,
+            min(first[1], second[1]) - radius,
+            max(first[1], second[1]) + radius,
+            center[2] - radius,
+            center[2] + radius,
+        )
+        for index in branch.intended_indices:
+            box = solids[index].BoundBox
+            if not _bounds_overlap(
+                segment_bounds,
+                (
+                    float(box.XMin), float(box.XMax),
+                    float(box.YMin), float(box.YMax),
+                    float(box.ZMin), float(box.ZMax),
+                ),
+            ):
+                return f"insufficient approximate material in Part_{index + 1}"
+        return None
+
+    def _exact_candidate_reason(
+        self, macro_result, solids, branch, center, tangent
+    ):
+        """Run the authoritative four-solid BRep checks once for a shortlist item."""
+        axis = _canonical_normal(tangent, branch.branch_id)
         cutter = self._cutter(center, axis)
         expected = set(branch.intended_indices)
         half_volume = math.pi * (self._parameters.hole_diameter_mm / 2.0) ** 2 * (self._parameters.length_mm / 2.0)
@@ -480,13 +612,13 @@ class DowelPlanner:
                 cut_shape = solid.cut(cutter)
                 removed = float(solid.Volume) - float(cut_shape.Volume)
             except Exception:
-                return "local boolean validation failed"
+                return "local boolean validation failed", cutter
             tolerance = volume_tolerance_mm3(float(solid.Volume))
             total_removed += max(0.0, removed)
             if index in expected and removed < half_volume * 0.55:
-                return f"insufficient material in Part_{index + 1}"
+                return f"insufficient material in Part_{index + 1}", cutter
             if index not in expected and removed > tolerance:
-                return f"would drill Part_{index + 1}"
+                return f"would drill Part_{index + 1}", cutter
         expected_material = (
             math.pi
             * (self._parameters.hole_diameter_mm / 2.0) ** 2
@@ -497,8 +629,12 @@ class DowelPlanner:
             expected_material * 1.0e-4,
         )
         if total_removed < expected_material - material_tolerance:
-            return "cutter intersects existing void"
-        return None
+            return "cutter intersects existing void", cutter
+        return None, cutter
+
+    @staticmethod
+    def _cutter_cache_key(center, axis):
+        return tuple(round(float(value), 9) for value in (*center, *axis))
 
     def _cutter(self, center, axis):
         import Part
@@ -583,6 +719,18 @@ def _rejection_counts(rejections):
     for rejection in rejections:
         counts[rejection.reason] = counts.get(rejection.reason, 0) + 1
     return tuple(sorted(counts.items()))
+
+
+def _bounds_overlap(first, second):
+    """Return whether two XYZ axis-aligned boxes overlap or touch."""
+    return not (
+        first[1] < second[0] - _COORDINATE_TOLERANCE_MM
+        or second[1] < first[0] - _COORDINATE_TOLERANCE_MM
+        or first[3] < second[2] - _COORDINATE_TOLERANCE_MM
+        or second[3] < first[2] - _COORDINATE_TOLERANCE_MM
+        or first[5] < second[4] - _COORDINATE_TOLERANCE_MM
+        or second[5] < first[4] - _COORDINATE_TOLERANCE_MM
+    )
 
 
 def _candidate_distances(target, start, end, *, search_limit=None):
