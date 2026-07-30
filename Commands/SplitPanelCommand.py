@@ -31,7 +31,7 @@ def _progressive_four_part_split(
     panel_bounds,
     exact_validator,
     *,
-    maximum_validations=Settings.Split.MAX_EXACT_TOPOLOGY_VALIDATIONS,
+    maximum_validations=Settings.Split.MAX_CONNECTIVITY_EXACT_VALIDATIONS,
     time_budget_s=Settings.Split.SEAM_PLANNING_TIME_BUDGET_S,
     maximum_connectivity_repairs=(
         Settings.Split.MAX_CONNECTIVITY_REPAIR_ATTEMPTS
@@ -51,7 +51,13 @@ def _progressive_four_part_split(
     validations = 0
     repair_attempts = 0
     repair_signatures = set()
+    repair_origins = {}
+    repair_priorities = {}
+    repair_history = []
     connectivity_diagnoses = []
+    best_connectivity = None
+    best_diagnosis = None
+    initial_disconnected_region = None
     repair_started = None
     started = clock()
     accepted = None
@@ -60,7 +66,10 @@ def _progressive_four_part_split(
         and validations < maximum_validations
         and clock() - started < time_budget_s
     ):
-        queue.sort(key=path_finder.topology_quality_key)
+        queue.sort(key=lambda item: (
+            repair_priorities.get(_plan_signature(item), (float("inf"), 0)),
+            path_finder.topology_quality_key(item),
+        ))
         candidate = queue.pop(0)
         signature = (
             candidate.vertical.points,
@@ -95,15 +104,50 @@ def _progressive_four_part_split(
             rejected_seconds += clock() - attempt_started
             diagnosis = error.diagnosis
             connectivity_diagnoses.append(diagnosis)
+            if initial_disconnected_region is None:
+                initial_disconnected_region = diagnosis.region_index
+            score = (
+                diagnosis.structural_count,
+                diagnosis.isolated_structural_volume_mm3,
+            )
             if repair_started is None:
                 repair_started = clock()
+            origin = repair_origins.get(signature)
+            if origin is not None:
+                _parent_score, detour_id, before_level, before_count = origin
+                history = (
+                    f"step {repair_attempts} {detour_id} "
+                    f"L{before_level}->L{before_level - 1}: "
+                    f"{before_count}->{diagnosis.structural_count} structural"
+                )
+                repair_history.append(history)
+                diagnostics.append("Connectivity repair: " + history)
+            if diagnosis.region_index != initial_disconnected_region:
+                diagnostics.append(
+                    f"Connectivity repair: rejected because Region_"
+                    f"{diagnosis.region_index} became disconnected while "
+                    f"repairing Region_{initial_disconnected_region}."
+                )
+                continue
+            if best_connectivity is not None and score >= best_connectivity:
+                diagnostics.append(
+                    f"Connectivity repair: candidate retained no improvement "
+                    f"({diagnosis.structural_count} structural, "
+                    f"{diagnosis.isolated_structural_volume_mm3:.6f} mm^3 "
+                    "isolated); restoring the best state."
+                )
+                continue
+            best_connectivity = score
+            best_diagnosis = diagnosis
             secondary = diagnosis.secondary
             responsible = (
                 secondary.nearest_detour_id or secondary.nearest_segment_id
             )
             diagnostics.append(
                 f"Seam candidate {validations}: Region_{diagnosis.region_index} "
-                f"disconnected ({len(diagnosis.components)} solids); secondary "
+                f"disconnected ({diagnosis.raw_solid_count} raw, "
+                f"{diagnosis.sliver_count} slivers, "
+                f"{diagnosis.structural_count} structural); largest island "
                 f"{secondary.volume_mm3:.6f} mm^3 at "
                 f"({secondary.centroid_mm[0]:.3f}, "
                 f"{secondary.centroid_mm[1]:.3f}); nearest "
@@ -113,7 +157,7 @@ def _progressive_four_part_split(
                 candidate, diagnosis, panel_bounds
             )
             added = 0
-            for child in children:
+            for priority, child in enumerate(children):
                 child_signature = (
                     child.vertical.points,
                     child.horizontal.points,
@@ -123,6 +167,19 @@ def _progressive_four_part_split(
                 if child_signature not in seen:
                     queue.append(child)
                     repair_signatures.add(child_signature)
+                    repair_priorities[child_signature] = (
+                        diagnosis.structural_count,
+                        priority,
+                    )
+                    changed = _changed_detour(path_finder, candidate, child)
+                    if changed is not None:
+                        detour_id, before_level = changed
+                        repair_origins[child_signature] = (
+                            score,
+                            detour_id,
+                            before_level,
+                            diagnosis.structural_count,
+                        )
                     added += 1
             if added:
                 diagnostics.append(
@@ -153,11 +210,22 @@ def _progressive_four_part_split(
             continue
         elapsed = clock() - attempt_started
         if attempt.solid_count == 4:
+            origin = repair_origins.get(signature)
+            if origin is not None:
+                _parent_score, detour_id, before_level, before_count = origin
+                history = (
+                    f"step {repair_attempts} {detour_id} "
+                    f"L{before_level}->L{before_level - 1}: "
+                    f"{before_count}->1 structural"
+                )
+                repair_history.append(history)
+                diagnostics.append("Connectivity repair: " + history)
             try:
                 accepted = replace(
                     attempt,
                     connectivity_repair_attempts=repair_attempts,
                     connectivity_diagnostics=tuple(connectivity_diagnoses),
+                    connectivity_repair_history=tuple(repair_history),
                 )
             except TypeError:
                 accepted = attempt
@@ -199,7 +267,7 @@ def _progressive_four_part_split(
             diagnostics[-1] if diagnostics
             else "no local connected alternative was accepted"
         )
-        terminal = connectivity_diagnoses[-1].with_failure(
+        terminal = (best_diagnosis or connectivity_diagnoses[-1]).with_failure(
             repair_attempts, reason
         )
         diagnostics.append(terminal.failure_message())
@@ -210,6 +278,27 @@ def _progressive_four_part_split(
         successful_seconds,
         tuple(diagnostics),
         clock() - started,
+    )
+
+
+def _changed_detour(path_finder, original, candidate):
+    """Return the single locally reduced detour and its previous level."""
+    for path in (original.vertical, original.horizontal):
+        for detour_id in path.detour_ids:
+            before = path_finder.detour_level(original, detour_id)
+            after = path_finder.detour_level(candidate, detour_id)
+            if after < before:
+                return detour_id, before
+    return None
+
+
+def _plan_signature(plan):
+    """Return the immutable route identity used by bounded search."""
+    return (
+        plan.vertical.points,
+        plan.horizontal.points,
+        plan.vertical.detour_levels,
+        plan.horizontal.detour_levels,
     )
 
 
@@ -379,15 +468,27 @@ class PanelOptimizerSplitPanelCommand:
                 "attempt(s)\n"
             )
             for diagnosis in macro_result.connectivity_diagnostics:
-                secondary = diagnosis.secondary
                 FreeCAD.Console.PrintMessage(
-                    f"  Region_{diagnosis.region_index}: secondary "
-                    f"{secondary.volume_mm3:.3f} mm^3, centroid "
-                    f"({secondary.centroid_mm[0]:.3f}, "
-                    f"{secondary.centroid_mm[1]:.3f}, "
-                    f"{secondary.centroid_mm[2]:.3f}), nearest "
-                    f"{secondary.nearest_seam}/"
-                    f"{secondary.nearest_detour_id or secondary.nearest_segment_id}\n"
+                    f"  Region_{diagnosis.region_index}: raw solids = "
+                    f"{diagnosis.raw_solid_count}, slivers = "
+                    f"{diagnosis.sliver_count}, structural = "
+                    f"{diagnosis.structural_count}\n"
+                )
+                for island in diagnosis.structural_islands:
+                    FreeCAD.Console.PrintMessage(
+                        f"    Island {island.rank}: "
+                        f"{island.volume_mm3:.3f} mm^3, centroid "
+                        f"({island.centroid_mm[0]:.3f}, "
+                        f"{island.centroid_mm[1]:.3f}, "
+                        f"{island.centroid_mm[2]:.3f}), bounds "
+                        f"{island.bounds_mm}, nearest "
+                        f"{island.nearest_seam}/"
+                        f"{island.nearest_detour_id or island.nearest_segment_id}, "
+                        f"opening {island.opening_distance_mm:.3f} mm\n"
+                    )
+            for history in macro_result.connectivity_repair_history:
+                FreeCAD.Console.PrintMessage(
+                    f"  Repair history: {history}\n"
                 )
             for diagnosis in macro_result.region_component_diagnostics:
                 FreeCAD.Console.PrintMessage(

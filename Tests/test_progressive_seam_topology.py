@@ -13,6 +13,12 @@ except ImportError:  # pragma: no cover
     Part = Vector = None
 
 from Commands.SplitPanelCommand import _progressive_four_part_split
+from Core.ConnectivityRepair import (
+    ComponentConnectivityObservation,
+    RegionConnectivityDiagnosis,
+)
+from Core.Exceptions import RegionConnectivityError
+from Core.Settings import Settings
 from Core.SinuousSeamPath import SinuousSeamPathFinder
 
 
@@ -67,6 +73,56 @@ class ProgressiveSeamTopologyTests(unittest.TestCase):
             seam_plan=plan,
         )
 
+    @classmethod
+    def _diagnosis(cls, plan, detours, *, slivers=0, region_index=2):
+        """Build classified multi-island evidence in priority order."""
+        def observation(rank, volume, detour_id, classification):
+            center = cls._center_for(plan, detour_id)
+            axis = "vertical" if detour_id.startswith("V") else "horizontal"
+            return ComponentConnectivityObservation(
+                rank=rank,
+                volume_mm3=volume,
+                bounds_mm=(center.x - 1.0, center.y - 1.0, 0.0,
+                           center.x + 1.0, center.y + 1.0, 8.0),
+                centroid_mm=(center.x, center.y, 4.0),
+                nearest_seam=axis,
+                nearest_segment_index=0,
+                nearest_segment_id=("VSEG_001" if axis == "vertical"
+                                    else "HSEG_001"),
+                nearest_detour_id=detour_id,
+                seam_distance_mm=float(rank),
+                opening_distance_mm=1.0,
+                footprint_mm2=4.0,
+                thickness_mm=8.0,
+                volume_ratio=volume / 100000.0,
+                touches_panel_exterior=False,
+                spans_substantial_thickness=True,
+                classification=classification,
+            )
+
+        primary = detours[0]
+        components = [observation(1, 100000.0, primary, "STRUCTURAL")]
+        components.extend(
+            observation(rank, volume, detour_id, "STRUCTURAL")
+            for rank, (volume, detour_id) in enumerate(
+                zip(
+                    range(5000, 5000 - len(detours) * 500, -500),
+                    detours,
+                ),
+                start=2,
+            )
+        )
+        components.extend(
+            observation(
+                len(components) + 1,
+                10.0 - index,
+                primary,
+                "NON_STRUCTURAL_SLIVER",
+            )
+            for index in range(slivers)
+        )
+        return RegionConnectivityDiagnosis(region_index, tuple(components))
+
     def test_two_problem_detours_are_reduced_progressively_to_four_parts(self):
         finder, candidates = self._case()
 
@@ -85,6 +141,20 @@ class ProgressiveSeamTopologyTests(unittest.TestCase):
         self.assertEqual(validations, 3)
         self.assertEqual(accepted.seam_plan.vertical.detour_levels, (2, 3))
         self.assertEqual(accepted.seam_plan.horizontal.detour_levels, (2, 3))
+        self.assertGreater(
+            accepted.seam_plan.vertical.maximum_deviation_mm, 0.5
+        )
+        self.assertGreater(
+            accepted.seam_plan.horizontal.maximum_deviation_mm, 0.5
+        )
+        self.assertTrue(all(
+            report.original_profile_preserved
+            for path in (
+                accepted.seam_plan.vertical,
+                accepted.seam_plan.horizontal,
+            )
+            for report in path.hole_offset_reports
+        ))
         self.assertIn("VDET_001", diagnostics[0])
         self.assertIn("HDET_001", diagnostics[1])
         self.assertIn("accepted", diagnostics[2])
@@ -132,6 +202,106 @@ class ProgressiveSeamTopologyTests(unittest.TestCase):
         )
         self.assertEqual(validations, 1)
         self.assertEqual(accepted.seam_plan, candidates[0])
+
+    def test_multi_island_repairs_progress_across_multiple_detours(self):
+        finder, candidates = self._case()
+
+        def validate(plan):
+            if finder.detour_level(plan, "VDET_001") == 3:
+                raise RegionConnectivityError(self._diagnosis(
+                    plan,
+                    ("VDET_001", "HDET_001", "VDET_002", "HDET_002"),
+                    slivers=2,
+                ))
+            if finder.detour_level(plan, "HDET_001") == 3:
+                raise RegionConnectivityError(self._diagnosis(
+                    plan, ("HDET_001", "VDET_002")
+                ))
+            return SimpleNamespace(solid_count=4, seam_plan=plan)
+
+        accepted, validations, _rejected, _success, diagnostics, _elapsed = (
+            _progressive_four_part_split(
+                finder,
+                candidates,
+                (0.0, 300.0, 0.0, 300.0),
+                validate,
+            )
+        )
+        self.assertIsNotNone(accepted)
+        self.assertEqual(validations, 3)
+        self.assertEqual(accepted.seam_plan.vertical.detour_levels, (2, 3))
+        self.assertEqual(accepted.seam_plan.horizontal.detour_levels, (2, 3))
+        history = "\n".join(diagnostics)
+        self.assertIn("7 raw, 2 slivers, 5 structural", history)
+        self.assertIn("VDET_001 L3->L2: 5->3", history)
+        self.assertIn("HDET_001 L3->L2: 3->1", history)
+
+    def test_multi_island_search_limits_match_v474d_bounds(self):
+        self.assertEqual(Settings.Split.MAX_MULTI_ISLAND_REPAIR_STEPS, 12)
+        self.assertEqual(Settings.Split.MAX_CONNECTIVITY_EXACT_VALIDATIONS, 12)
+        self.assertEqual(Settings.Split.MAX_CONNECTIVITY_REPAIR_TIME_S, 30.0)
+
+    def test_worse_child_is_not_expanded_and_best_state_is_retained(self):
+        finder, candidates = self._case()
+
+        def validate(plan):
+            vertical = finder.detour_level(plan, "VDET_001")
+            horizontal = finder.detour_level(plan, "HDET_001")
+            if vertical == 2:
+                raise RegionConnectivityError(self._diagnosis(
+                    plan,
+                    ("VDET_001", "HDET_001", "VDET_002", "HDET_002",
+                     "VDET_001"),
+                ))
+            if horizontal == 3:
+                raise RegionConnectivityError(self._diagnosis(
+                    plan,
+                    ("VDET_001", "HDET_001", "VDET_002", "HDET_002"),
+                ))
+            return SimpleNamespace(solid_count=4, seam_plan=plan)
+
+        accepted, validations, _r, _s, diagnostics, _e = (
+            _progressive_four_part_split(
+                finder,
+                candidates,
+                (0.0, 300.0, 0.0, 300.0),
+                validate,
+            )
+        )
+        self.assertIsNotNone(accepted)
+        self.assertLessEqual(validations, 3)
+        self.assertTrue(any(
+            "restoring the best state" in item for item in diagnostics
+        ))
+
+    def test_repair_that_breaks_adjacent_region_is_rejected(self):
+        finder, candidates = self._case()
+
+        def validate(plan):
+            vertical = finder.detour_level(plan, "VDET_001")
+            horizontal = finder.detour_level(plan, "HDET_001")
+            if vertical == 2:
+                raise RegionConnectivityError(self._diagnosis(
+                    plan, ("VDET_001",), region_index=4
+                ))
+            if horizontal == 3:
+                raise RegionConnectivityError(self._diagnosis(
+                    plan, ("VDET_001", "HDET_001", "VDET_002", "HDET_002")
+                ))
+            return SimpleNamespace(solid_count=4, seam_plan=plan)
+
+        accepted, _v, _r, _s, diagnostics, _e = (
+            _progressive_four_part_split(
+                finder,
+                candidates,
+                (0.0, 300.0, 0.0, 300.0),
+                validate,
+            )
+        )
+        self.assertIsNotNone(accepted)
+        self.assertTrue(any(
+            "Region_4 became disconnected" in item for item in diagnostics
+        ))
 
 
 if __name__ == "__main__":

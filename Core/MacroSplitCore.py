@@ -66,6 +66,7 @@ class MacroSplitResult:
     region_discarded_sliver_counts: tuple[int, ...] = ()
     connectivity_repair_attempts: int = 0
     connectivity_diagnostics: tuple[object, ...] = ()
+    connectivity_repair_history: tuple[str, ...] = ()
     region_component_diagnostics: tuple[object, ...] = ()
 
 
@@ -387,30 +388,7 @@ class MacroSplitCore:
                     component_diagnostics.append(diagnosis)
                     structural = diagnosis.structural_components
                     if len(structural) != 1:
-                        structural_ranks = {
-                            item.rank for item in structural
-                        }
-                        structural_solids = tuple(
-                            solid for rank, solid in enumerate(
-                                sorted(
-                                    owned_solids,
-                                    key=lambda item: float(item.Volume),
-                                    reverse=True,
-                                ),
-                                start=1,
-                            )
-                            if rank in structural_ranks
-                        )
-                        raise RegionConnectivityError(
-                            diagnose_region_connectivity(
-                                index,
-                                structural_solids,
-                                seam_plan,
-                                (xmin, ymin, zmin, xmax, ymax, zmax),
-                                zmax - zmin,
-                                original_exterior,
-                            )
-                        )
+                        raise RegionConnectivityError(diagnosis)
                     owned = sorted(
                         owned_solids,
                         key=lambda item: float(item.Volume),

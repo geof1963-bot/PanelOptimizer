@@ -143,6 +143,16 @@ not structural vetoes. Silhouette protection is evaluated against a surface
 extruded from the original panel top face's `OuterWire`; internal artistic-hole
 wires and transient seam/region boundaries are not included.
 
+V4.74D extends connectivity repair to multiple structural islands. Classified
+slivers remain excluded, while structural islands are prioritized by volume
+and seam distance. A bounded greedy beam emits one local curved level reduction
+per responsible detour, exactly rebuilds all four regions, and keeps a child
+only when structural component count or isolated volume improves. Multiple
+detours may therefore be reduced progressively without resetting either seam.
+Search retains the best state and is bounded to 12 repair steps, 12 exact
+connectivity validations, and 30 seconds. Diagnostics include raw, sliver, and
+structural counts plus the complete per-detour repair history.
+
 ---
 
 # Printing Constraints

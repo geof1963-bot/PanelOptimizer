@@ -70,14 +70,52 @@ class RegionConnectivityDiagnosis:
         return tuple(item for item in self.components if item.is_structural)
 
     @property
+    def main(self) -> ComponentConnectivityObservation:
+        """Return the largest structural ownership component."""
+        return self.structural_components[0]
+
+    @property
+    def structural_islands(self):
+        """Return repair targets by volume, then seam proximity."""
+        return tuple(sorted(
+            self.structural_components[1:],
+            key=lambda item: (
+                -item.volume_mm3,
+                item.seam_distance_mm,
+                item.rank,
+            ),
+        ))
+
+    @property
+    def raw_solid_count(self) -> int:
+        """Return all solids before V4.74C classification."""
+        return len(self.components)
+
+    @property
+    def structural_count(self) -> int:
+        """Return the number of physically meaningful components."""
+        return len(self.structural_components)
+
+    @property
+    def sliver_count(self) -> int:
+        """Return the number of confirmed B-rep fragments."""
+        return len(self.ignored_slivers)
+
+    @property
+    def isolated_structural_volume_mm3(self) -> float:
+        """Return structural material outside the main component."""
+        return sum(item.volume_mm3 for item in self.structural_islands)
+
+    @property
     def ignored_slivers(self):
         """Return independently confirmed non-structural fragments."""
         return tuple(item for item in self.components if not item.is_structural)
 
     @property
     def secondary(self) -> ComponentConnectivityObservation:
-        """Return the largest component other than the main body."""
-        return self.components[1]
+        """Return the priority island, or first secondary sliver for reports."""
+        islands = self.structural_islands
+        return islands[0] if islands else self.components[1]
 
     def with_failure(self, attempts: int, reason: str):
         """Return the same immutable evidence with terminal search details."""
@@ -115,7 +153,9 @@ class RegionConnectivityDiagnosis:
             )
         return (
             f"Region_{self.region_index} disconnected\n"
-            f"Components: {len(self.components)}\n"
+            f"Raw solids: {self.raw_solid_count}\n"
+            f"Slivers: {self.sliver_count}\n"
+            f"Structural: {self.structural_count}\n"
             + "\n".join(component_lines)
             + "\n"
             f"Secondary volume: {secondary.volume_mm3:.6f} mm^3\n"

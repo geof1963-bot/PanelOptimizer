@@ -417,27 +417,36 @@ class SinuousSeamPathFinder:
         diagnosis: object,
         panel_bounds: tuple[float, float, float, float],
     ) -> tuple[SinuousSeamPlan, ...]:
-        """Return only curved, local reductions of the responsible detour.
+        """Return curved one-step reductions for prioritized islands.
 
-        V4.74A deliberately does not restart the global route search.  Each
-        child shortens the same contour-following unit by one quality level;
-        all other detours and the opposite seam are retained.
+        V4.74D deliberately does not restart the global route search. The
+        largest structural island is considered first, then nearer islands.
+        At most one child per responsible detour is emitted so exact feedback
+        drives progressive multi-detour repair without combinatorial search.
         """
         try:
-            detour_id = diagnosis.secondary.nearest_detour_id
+            islands = diagnosis.structural_islands
         except AttributeError:
             return ()
-        if not detour_id:
-            return ()
         candidates = []
-        current = plan
-        while len(candidates) < self._split_settings.MAX_CONNECTIVITY_REPAIR_ATTEMPTS:
-            child = self.simplify_detour(current, detour_id, panel_bounds)
+        handled = set()
+        for island in islands:
+            detour_id = island.nearest_detour_id
+            if not detour_id or detour_id in handled:
+                continue
+            handled.add(detour_id)
+            child = self.simplify_detour(plan, detour_id, panel_bounds)
             if child is None:
-                break
-            if self._connectivity_repair_precheck(plan, child, diagnosis):
+                continue
+            island_diagnosis = replace(
+                diagnosis, components=(diagnosis.main, island)
+            )
+            if self._connectivity_repair_precheck(
+                plan, child, island_diagnosis
+            ):
                 candidates.append(child)
-            current = child
+            if len(candidates) >= self._split_settings.SEAM_BEAM_WIDTH:
+                break
         return tuple(candidates)
 
     def _connectivity_repair_precheck(self, original, candidate, diagnosis):
