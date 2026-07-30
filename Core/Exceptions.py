@@ -101,6 +101,14 @@ class SplitOperationError(SplitterError):
     pass
 
 
+class RegionConnectivityError(SplitOperationError):
+    """Raised with structured evidence for a disconnected ownership region."""
+
+    def __init__(self, diagnosis):
+        self.diagnosis = diagnosis
+        super().__init__(diagnosis.failure_message())
+
+
 class UnexpectedPartCountError(SplitOperationError):
     """Raised when a split does not produce exactly four quadrant parts."""
     pass

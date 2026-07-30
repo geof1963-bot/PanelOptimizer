@@ -6,7 +6,12 @@ from __future__ import annotations
 import math
 from dataclasses import dataclass
 
-from .Exceptions import SplitOperationError, SplitSourceError
+from .ConnectivityRepair import diagnose_region_connectivity
+from .Exceptions import (
+    RegionConnectivityError,
+    SplitOperationError,
+    SplitSourceError,
+)
 
 __all__ = [
     "MacroGrooveParameters",
@@ -59,6 +64,8 @@ class MacroSplitResult:
     region_areas_mm2: tuple[float, ...] = ()
     region_solid_counts: tuple[int, ...] = ()
     region_discarded_sliver_counts: tuple[int, ...] = ()
+    connectivity_repair_attempts: int = 0
+    connectivity_diagnostics: tuple[object, ...] = ()
 
 
 class MacroSplitCore:
@@ -363,9 +370,10 @@ class MacroSplitCore:
                 owned = panel_shape.common(tool)
                 owned_solids = tuple(owned.Solids)
                 if len(owned_solids) != 1:
-                    raise SplitOperationError(
-                        f"Region_{index} ownership is disconnected: "
-                        f"{len(owned_solids)} solids."
+                    raise RegionConnectivityError(
+                        diagnose_region_connectivity(
+                            index, owned_solids, seam_plan
+                        )
                     )
                 surface_part = owned.cut(surface_vertical).cut(surface_horizontal)
                 final_part = owned.cut(full_vertical).cut(full_horizontal)

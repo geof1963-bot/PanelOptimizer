@@ -411,6 +411,82 @@ class SinuousSeamPathFinder:
             return None
         return candidate
 
+    def connectivity_repair_candidates(
+        self,
+        plan: SinuousSeamPlan,
+        diagnosis: object,
+        panel_bounds: tuple[float, float, float, float],
+    ) -> tuple[SinuousSeamPlan, ...]:
+        """Return only curved, local reductions of the responsible detour.
+
+        V4.74A deliberately does not restart the global route search.  Each
+        child shortens the same contour-following unit by one quality level;
+        all other detours and the opposite seam are retained.
+        """
+        try:
+            detour_id = diagnosis.secondary.nearest_detour_id
+        except AttributeError:
+            return ()
+        if not detour_id:
+            return ()
+        candidates = []
+        current = plan
+        while len(candidates) < self._split_settings.MAX_CONNECTIVITY_REPAIR_ATTEMPTS:
+            child = self.simplify_detour(current, detour_id, panel_bounds)
+            if child is None:
+                break
+            if self._connectivity_repair_precheck(plan, child, diagnosis):
+                candidates.append(child)
+            current = child
+        return tuple(candidates)
+
+    def _connectivity_repair_precheck(self, original, candidate, diagnosis):
+        """Cheap 2D gate before any OCC ownership ``common()`` operation."""
+        secondary = diagnosis.secondary
+        target_axis = secondary.nearest_seam
+        target_original = getattr(original, target_axis)
+        target_candidate = getattr(candidate, target_axis)
+        other_axis = "horizontal" if target_axis == "vertical" else "vertical"
+        if getattr(original, other_axis) != getattr(candidate, other_axis):
+            return False
+        if candidate.intersection_count != 1:
+            return False
+        if target_original.points == target_candidate.points:
+            return False
+        if not (
+            _meaningfully_sinuous(candidate.vertical)
+            and _meaningfully_sinuous(candidate.horizontal)
+        ):
+            return False
+        if not all(
+            report.original_profile_preserved
+            for path in (candidate.vertical, candidate.horizontal)
+            for report in path.hole_offset_reports
+        ):
+            return False
+        detour_id = secondary.nearest_detour_id
+        if detour_id not in target_candidate.detour_ids:
+            return False
+        index = target_candidate.detour_ids.index(detour_id)
+        feature_id = target_candidate.detour_feature_ids[index]
+        feature = next(
+            (item for item in candidate.features if item.feature_id == feature_id),
+            None,
+        )
+        if feature is None:
+            return False
+        xmin, ymin, xmax, ymax = feature.bounds_mm
+        travel_center = (
+            secondary.centroid_mm[1]
+            if target_axis == "vertical"
+            else secondary.centroid_mm[0]
+        )
+        feature_min, feature_max = (
+            (ymin, ymax) if target_axis == "vertical" else (xmin, xmax)
+        )
+        window = float(self._split_settings.CONNECTIVITY_REPAIR_WINDOW_MM)
+        return feature_min - window <= travel_center <= feature_max + window
+
     @staticmethod
     def likely_problem_detours(
         plan: SinuousSeamPlan, macro_result: object

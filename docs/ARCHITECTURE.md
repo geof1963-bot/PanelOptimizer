@@ -270,6 +270,24 @@ four solids enters the unchanged V4.26 mesh/export pipeline. Runtime paths and
 FreeCAD cutters never enter `Core.Models`. Preview objects are document-only UI
 artifacts and remain separate from `PanelOptimizer_Result`.
 
+### V4.74A connectivity-aware region correction
+
+`MacroSplitCore.cut_regions` still constructs the four explicit, closed,
+non-overlapping XY ownership regions. A multi-solid ownership result is now a
+structured `RegionConnectivityError`, not a generic immediate rejection.
+`ConnectivityRepair` measures every component and maps its centroid to the
+nearest seam segment, active detour, and sampled artistic opening. The command
+uses this evidence to ask `SinuousSeamPathFinder` only for successive local
+reductions of the responsible contour-following detour. Its cheap 2D gate keeps
+the opposite seam unchanged, preserves protected opening profiles, requires
+both seams to remain meaningfully sinuous, and retains exactly one crossing.
+
+Every shortlisted child rebuilds and extracts all four regions, which validates
+both sides of the changed seam. Acceptance requires one real solid per region;
+no fuse, compound-as-part, mesh bridge, or artificial connector is permitted.
+The local loop is capped at eight exact attempts and 20 seconds. Dowel, lip,
+mesh, and export stages receive only the accepted connected result.
+
 ### V4.40 dowel-alignment step
 
 `DowelPlanner` is one focused runtime-geometry component between the accepted

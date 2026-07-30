@@ -108,7 +108,20 @@ tangent. The same cylinder is subtracted from only the two mating transient
 parts, which makes the paired holes coaxial. The source and seam paths remain
 unchanged. `PanelOptimizer_Dowels` previews the planned cylinders, while only
 the four drilled parts proceed to the unchanged V4.26 mesh and transactional
-STL pipeline. No dowel solid, strength score, lip, or other joinery is created.
+    STL pipeline. No dowel solid, strength score, lip, or other joinery is created.
+
+## V4.74A connectivity-aware region repair
+
+Explicit sinuous XY ownership remains the current partition strategy. If an
+artistic opening and a local seam detour isolate a secondary material
+component, region extraction records its volume, bounds, centroid, nearest seam
+segment/detour, and opening distance. A bounded local search then shortens only
+that contour-following detour and rebuilds all four regions. The repaired route
+must retain curved vertical and horizontal seams, one crossing, protected hole
+profiles, printable dimensions, and exactly one physical solid per region
+before dowels, lips, mesh repair, or STL export can run. Search is limited to
+eight exact repair attempts and 20 seconds; disconnected material is never
+fused or bridged.
 
 ---
 

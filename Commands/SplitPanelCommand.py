@@ -5,11 +5,16 @@ from __future__ import annotations
 
 import os
 import time
+from dataclasses import replace
 
 import FreeCAD
 import FreeCADGui
 
-from Core.Exceptions import PanelOptimizerError, SplitOperationError
+from Core.Exceptions import (
+    PanelOptimizerError,
+    RegionConnectivityError,
+    SplitOperationError,
+)
 from Core.DowelPlanner import DowelPlanner
 from Core.LipBuilder import LipBuilder, LipParameters
 from Core.MacroPartExtractor import MacroPartExtractor
@@ -28,6 +33,12 @@ def _progressive_four_part_split(
     *,
     maximum_validations=Settings.Split.MAX_EXACT_TOPOLOGY_VALIDATIONS,
     time_budget_s=Settings.Split.SEAM_PLANNING_TIME_BUDGET_S,
+    maximum_connectivity_repairs=(
+        Settings.Split.MAX_CONNECTIVITY_REPAIR_ATTEMPTS
+    ),
+    connectivity_time_budget_s=(
+        Settings.Split.MAX_CONNECTIVITY_REPAIR_TIME_S
+    ),
     clock=time.perf_counter,
 ):
     """Bounded best-first local simplification around exact topology feedback."""
@@ -38,6 +49,10 @@ def _progressive_four_part_split(
     rejected_seconds = 0.0
     successful_seconds = 0.0
     validations = 0
+    repair_attempts = 0
+    repair_signatures = set()
+    connectivity_diagnoses = []
+    repair_started = None
     started = clock()
     accepted = None
     while (
@@ -56,10 +71,70 @@ def _progressive_four_part_split(
         if signature in seen:
             continue
         seen.add(signature)
+        is_connectivity_repair = signature in repair_signatures
+        if is_connectivity_repair:
+            if repair_attempts >= maximum_connectivity_repairs:
+                diagnostics.append(
+                    "Connectivity repair stopped at the configured attempt limit."
+                )
+                break
+            if (
+                repair_started is not None
+                and clock() - repair_started >= connectivity_time_budget_s
+            ):
+                diagnostics.append(
+                    "Connectivity repair stopped at the configured time limit."
+                )
+                break
+            repair_attempts += 1
         attempt_started = clock()
         validations += 1
         try:
             attempt = exact_validator(candidate)
+        except RegionConnectivityError as error:
+            rejected_seconds += clock() - attempt_started
+            diagnosis = error.diagnosis
+            connectivity_diagnoses.append(diagnosis)
+            if repair_started is None:
+                repair_started = clock()
+            secondary = diagnosis.secondary
+            responsible = (
+                secondary.nearest_detour_id or secondary.nearest_segment_id
+            )
+            diagnostics.append(
+                f"Seam candidate {validations}: Region_{diagnosis.region_index} "
+                f"disconnected ({len(diagnosis.components)} solids); secondary "
+                f"{secondary.volume_mm3:.6f} mm^3 at "
+                f"({secondary.centroid_mm[0]:.3f}, "
+                f"{secondary.centroid_mm[1]:.3f}); nearest "
+                f"{secondary.nearest_seam} detour {responsible}."
+            )
+            children = path_finder.connectivity_repair_candidates(
+                candidate, diagnosis, panel_bounds
+            )
+            added = 0
+            for child in children:
+                child_signature = (
+                    child.vertical.points,
+                    child.horizontal.points,
+                    child.vertical.detour_levels,
+                    child.horizontal.detour_levels,
+                )
+                if child_signature not in seen:
+                    queue.append(child)
+                    repair_signatures.add(child_signature)
+                    added += 1
+            if added:
+                diagnostics.append(
+                    f"Connectivity repair: {added} curved local alternative(s) "
+                    f"shortlisted around {responsible}."
+                )
+            else:
+                diagnostics.append(
+                    f"Connectivity repair: no safe curved local alternative "
+                    f"passed the 2D precheck around {responsible}."
+                )
+            continue
         except SplitOperationError as error:
             rejected_seconds += clock() - attempt_started
             diagnostics.append(
@@ -78,7 +153,14 @@ def _progressive_four_part_split(
             continue
         elapsed = clock() - attempt_started
         if attempt.solid_count == 4:
-            accepted = attempt
+            try:
+                accepted = replace(
+                    attempt,
+                    connectivity_repair_attempts=repair_attempts,
+                    connectivity_diagnostics=tuple(connectivity_diagnoses),
+                )
+            except TypeError:
+                accepted = attempt
             successful_seconds = elapsed
             diagnostics.append(
                 f"Seam candidate {validations}: parts = 4, accepted"
@@ -112,6 +194,15 @@ def _progressive_four_part_split(
                 if fallback_signature not in seen:
                     queue.append(fallback)
                     break
+    if accepted is None and connectivity_diagnoses:
+        reason = (
+            diagnostics[-1] if diagnostics
+            else "no local connected alternative was accepted"
+        )
+        terminal = connectivity_diagnoses[-1].with_failure(
+            repair_attempts, reason
+        )
+        diagnostics.append(terminal.failure_message())
     return (
         accepted,
         validations,
@@ -282,6 +373,22 @@ class PanelOptimizerSplitPanelCommand:
             )
             for diagnostic in topology_attempts:
                 FreeCAD.Console.PrintMessage(diagnostic + "\n")
+            FreeCAD.Console.PrintMessage(
+                "Connectivity repair: "
+                f"{macro_result.connectivity_repair_attempts} exact local "
+                "attempt(s)\n"
+            )
+            for diagnosis in macro_result.connectivity_diagnostics:
+                secondary = diagnosis.secondary
+                FreeCAD.Console.PrintMessage(
+                    f"  Region_{diagnosis.region_index}: secondary "
+                    f"{secondary.volume_mm3:.3f} mm^3, centroid "
+                    f"({secondary.centroid_mm[0]:.3f}, "
+                    f"{secondary.centroid_mm[1]:.3f}, "
+                    f"{secondary.centroid_mm[2]:.3f}), nearest "
+                    f"{secondary.nearest_seam}/"
+                    f"{secondary.nearest_detour_id or secondary.nearest_segment_id}\n"
+                )
             FreeCAD.Console.PrintMessage(
                 "[1] Seam guides found\n"
                 f"Vertical features: {len(macro_result.seam_plan.vertical.followed_feature_ids)}\n"
@@ -600,7 +707,7 @@ class PanelOptimizerSplitPanelCommand:
     def _print_performance(timings) -> None:
         """Print one concise V4.61 stage report in seconds."""
         FreeCAD.Console.PrintMessage(
-            "PanelOptimizer Performance V4.72\n"
+            "PanelOptimizer Performance V4.74A\n"
             f"Contour prep + route search: {timings.get('seams', 0.0):.3f} s\n"
             f"Topology validation: "
             f"{timings.get('topology_validation', 0.0):.3f} s\n"
