@@ -496,53 +496,6 @@ class SinuousSeamPathFinder:
         window = float(self._split_settings.CONNECTIVITY_REPAIR_WINDOW_MM)
         return feature_min - window <= travel_center <= feature_max + window
 
-    @staticmethod
-    def likely_problem_detours(
-        plan: SinuousSeamPlan, macro_result: object
-    ) -> tuple[str, ...]:
-        """Map the smallest unexpected solids to nearby deterministic detours."""
-        feature_bounds = {
-            feature.feature_id: feature.bounds_mm for feature in plan.features
-        }
-        units = []
-        for path in (plan.vertical, plan.horizontal):
-            units.extend(zip(
-                path.detour_ids, path.detour_feature_ids, path.detour_levels
-            ))
-        active = tuple(item for item in units if item[2] > 0)
-        if not active:
-            return ()
-        try:
-            solids = tuple(sorted(
-                macro_result.shape.Solids,
-                key=lambda solid: float(solid.Volume),
-            ))
-            unexpected_count = max(1, len(solids) - 4)
-            centers = tuple(
-                (float(solid.CenterOfMass.x), float(solid.CenterOfMass.y))
-                for solid in solids[:unexpected_count]
-            )
-        except Exception:
-            centers = ()
-
-        def rectangle_distance(center, bounds):
-            x, y = center
-            xmin, ymin, xmax, ymax = bounds
-            return math.hypot(
-                max(xmin - x, 0.0, x - xmax),
-                max(ymin - y, 0.0, y - ymax),
-            )
-
-        ranked = []
-        for detour_id, feature_id, level in active:
-            bounds = feature_bounds.get(feature_id)
-            proximity = min(
-                (rectangle_distance(center, bounds) for center in centers),
-                default=math.inf,
-            ) if bounds is not None else math.inf
-            ranked.append((proximity, -level, detour_id))
-        return tuple(item[2] for item in sorted(ranked))
-
     def _path_variants(self, primary, center_other, panel_bounds, features):
         """Build a bounded set of cached-feature routes from complex to straight."""
         axis = primary.axis

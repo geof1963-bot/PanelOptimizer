@@ -5,7 +5,7 @@ from __future__ import annotations
 
 import os
 import time
-from dataclasses import replace
+from dataclasses import dataclass, replace
 
 import FreeCAD
 import FreeCADGui
@@ -43,7 +43,6 @@ def _progressive_four_part_split(
 ):
     """Bounded best-first local simplification around exact topology feedback."""
     queue = list(candidate_plans[:1])
-    reserve = list(candidate_plans[1:])
     seen = set()
     diagnostics = []
     rejected_seconds = 0.0
@@ -104,6 +103,20 @@ def _progressive_four_part_split(
             rejected_seconds += clock() - attempt_started
             diagnosis = error.diagnosis
             connectivity_diagnoses.append(diagnosis)
+            diagnostics.append(
+                "Connectivity check: "
+                + " ".join(
+                    f"R{region} = "
+                    + (
+                        "1"
+                        if region < diagnosis.region_index
+                        else str(diagnosis.structural_count)
+                        if region == diagnosis.region_index
+                        else "pending"
+                    )
+                    for region in range(1, 5)
+                )
+            )
             if initial_disconnected_region is None:
                 initial_disconnected_region = diagnosis.region_index
             score = (
@@ -197,19 +210,12 @@ def _progressive_four_part_split(
             diagnostics.append(
                 f"Seam candidate {validations}: region extraction rejected: {error}"
             )
-            for fallback in reserve:
-                fallback_signature = (
-                    fallback.vertical.points,
-                    fallback.horizontal.points,
-                    fallback.vertical.detour_levels,
-                    fallback.horizontal.detour_levels,
-                )
-                if fallback_signature not in seen:
-                    queue.append(fallback)
-                    break
             continue
         elapsed = clock() - attempt_started
-        if attempt.solid_count == 4:
+        if attempt.region_solid_counts == (1, 1, 1, 1):
+            diagnostics.append(
+                "Connectivity check: R1 = 1 R2 = 1 R3 = 1 R4 = 1"
+            )
             origin = repair_origins.get(signature)
             if origin is not None:
                 _parent_score, detour_id, before_level, before_count = origin
@@ -231,37 +237,13 @@ def _progressive_four_part_split(
                 accepted = attempt
             successful_seconds = elapsed
             diagnostics.append(
-                f"Seam candidate {validations}: parts = 4, accepted"
+                f"Seam candidate {validations}: structural regions = "
+                "1/1/1/1, accepted"
             )
             break
-        rejected_seconds += elapsed
-        problem_ids = path_finder.likely_problem_detours(candidate, attempt)
-        child = None
-        for detour_id in problem_ids:
-            before_level = path_finder.detour_level(candidate, detour_id)
-            child = path_finder.simplify_detour(
-                candidate, detour_id, panel_bounds
-            )
-            if child is not None:
-                diagnostics.append(
-                    f"Seam candidate {validations}: parts = "
-                    f"{attempt.solid_count}, problem detour = {detour_id}, "
-                    f"action = reduce {before_level}->{before_level - 1}"
-                )
-                break
-        if child is not None:
-            queue.append(child)
-        else:
-            for fallback in reserve:
-                fallback_signature = (
-                    fallback.vertical.points,
-                    fallback.horizontal.points,
-                    fallback.vertical.detour_levels,
-                    fallback.horizontal.detour_levels,
-                )
-                if fallback_signature not in seen:
-                    queue.append(fallback)
-                    break
+        raise SplitOperationError(
+            "Connected-region partition returned invalid connectivity metadata."
+        )
     if accepted is None and connectivity_diagnoses:
         reason = (
             diagnostics[-1] if diagnostics
@@ -299,6 +281,74 @@ def _plan_signature(plan):
         plan.horizontal.points,
         plan.vertical.detour_levels,
         plan.horizontal.detour_levels,
+    )
+
+
+@dataclass(frozen=True, slots=True)
+class _ProductionPartitionOutcome:
+    """Complete seam-to-connected-regions production result."""
+
+    macro_result: object
+    seam_diagnostics: dict
+    exact_validations: int
+    rejected_seconds: float
+    successful_seconds: float
+    diagnostics: tuple[str, ...]
+    planning_seconds: float
+
+
+def _run_production_partition(
+    source_shape,
+    vertical_offset,
+    horizontal_offset,
+    parameters,
+    *,
+    path_finder=None,
+    exact_validator=None,
+):
+    """Build seams and return exactly four connected ownership regions.
+
+    This is the sole Split Panel partition entry. Multi-solid extraction is
+    classified inside ``MacroSplitCore.cut_regions`` and reaches the existing
+    progressive repair through ``RegionConnectivityError``.
+    """
+    finder = path_finder or SinuousSeamPathFinder()
+    proposed = finder.generate(
+        source_shape, vertical_offset, horizontal_offset
+    )
+    bounds = source_shape.BoundBox
+    panel_bounds = (
+        float(bounds.XMin), float(bounds.XMax),
+        float(bounds.YMin), float(bounds.YMax),
+    )
+    plans = tuple(finder.topology_shortlist(proposed, panel_bounds))
+    validator = exact_validator or (
+        lambda candidate: MacroSplitCore().cut_regions(
+            source_shape,
+            vertical_offset,
+            horizontal_offset,
+            parameters,
+            seam_plan=candidate,
+        )
+    )
+    result = _progressive_four_part_split(
+        finder, plans, panel_bounds, validator
+    )
+    macro_result, validations, rejected, successful, diagnostics, elapsed = result
+    if macro_result is None:
+        detail = " ".join(diagnostics[-3:])
+        raise PanelOptimizerError(
+            "Connectivity repair exhausted before all four ownership "
+            f"regions became structural solids. {detail}"
+        )
+    return _ProductionPartitionOutcome(
+        macro_result,
+        finder.search_diagnostics,
+        validations,
+        rejected,
+        successful,
+        diagnostics,
+        elapsed,
     )
 
 
@@ -342,6 +392,10 @@ class PanelOptimizerSplitPanelCommand:
             self._error("PanelOptimizer: no active document.")
             return
 
+        FreeCAD.Console.PrintMessage(
+            "PanelOptimizer Split Pipeline V4.75\n"
+        )
+
         timings = {}
         total_started = time.perf_counter()
         interactive_wait = 0.0
@@ -350,57 +404,27 @@ class PanelOptimizerSplitPanelCommand:
                 FreeCADGui.Selection.getSelection()
             )
             self._validate_seam_preview_names(document)
-            path_finder = SinuousSeamPathFinder()
             started = time.perf_counter()
-            proposed_plan = path_finder.generate(
+            partition = _run_production_partition(
                 source_object.Shape,
                 self._vertical_offset,
                 self._horizontal_offset,
+                self._parameters,
             )
             bounds = source_object.Shape.BoundBox
-            panel_bounds = (
-                float(bounds.XMin), float(bounds.XMax),
-                float(bounds.YMin), float(bounds.YMax),
-            )
-            candidate_plans = tuple(
-                path_finder.topology_shortlist(proposed_plan, panel_bounds)
-            )
-            seam_diagnostics = path_finder.search_diagnostics
+            seam_diagnostics = partition.seam_diagnostics
             timings["seams"] = time.perf_counter() - started
-            macro_result = None
-            def validate_candidate(candidate):
-                return MacroSplitCore().cut_regions(
-                    source_object.Shape,
-                    self._vertical_offset,
-                    self._horizontal_offset,
-                    self._parameters,
-                    seam_plan=candidate,
-                )
-
-            (
-                macro_result,
-                exact_topology_validations,
-                rejected_topology_seconds,
-                successful_split_seconds,
-                topology_attempts,
-                seam_planning_seconds,
-            ) = _progressive_four_part_split(
-                path_finder,
-                candidate_plans,
-                panel_bounds,
-                validate_candidate,
-            )
+            macro_result = partition.macro_result
+            exact_topology_validations = partition.exact_validations
+            rejected_topology_seconds = partition.rejected_seconds
+            successful_split_seconds = partition.successful_seconds
+            topology_attempts = partition.diagnostics
+            seam_planning_seconds = partition.planning_seconds
             seam_diagnostics["progressive_planning_seconds"] = (
                 seam_planning_seconds
             )
             timings["topology_validation"] = rejected_topology_seconds
             timings["split"] = successful_split_seconds
-            if macro_result is None:
-                detail = " ".join(topology_attempts[-3:])
-                raise PanelOptimizerError(
-                    "No seam guide produced four valid XY ownership regions. "
-                    f"{detail}"
-                )
             planner = DowelPlanner()
             started = time.perf_counter()
             dowel_plan = planner.plan(macro_result)
@@ -462,6 +486,15 @@ class PanelOptimizerSplitPanelCommand:
             )
             for diagnostic in topology_attempts:
                 FreeCAD.Console.PrintMessage(diagnostic + "\n")
+            FreeCAD.Console.PrintMessage("Production region classification:\n")
+            for index in range(4):
+                FreeCAD.Console.PrintMessage(
+                    f"  R{index + 1}: raw = "
+                    f"{macro_result.region_raw_solid_counts[index]}, "
+                    f"slivers = "
+                    f"{macro_result.region_discarded_sliver_counts[index]}, "
+                    f"structural = {macro_result.region_solid_counts[index]}\n"
+                )
             FreeCAD.Console.PrintMessage(
                 "Connectivity repair: "
                 f"{macro_result.connectivity_repair_attempts} exact local "

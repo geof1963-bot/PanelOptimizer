@@ -153,6 +153,17 @@ Search retains the best state and is bounded to 12 repair steps, 12 exact
 connectivity validations, and 30 seconds. Diagnostics include raw, sliver, and
 structural counts plus the complete per-detour repair history.
 
+V4.75 makes connected-region partitioning the sole Split Panel production
+path. The GUI command delegates seam generation, ownership extraction, sliver
+classification, progressive repair, and final `1/1/1/1` validation to one
+orchestrator. Post-cutter multi-solid results now raise structured connectivity
+evidence instead of the former immediate extraction error. Historical reserve
+routes and raw `solid_count == 4` acceptance are no longer used. Dowels, lips,
+mesh generation, and STL export begin only after all four region connectivity
+counts are exactly one. Normal command output starts with
+`PanelOptimizer Split Pipeline V4.75` and reports raw/sliver/structural counts
+for every final region.
+
 ---
 
 # Printing Constraints

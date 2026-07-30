@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import unittest
 from types import SimpleNamespace
+from unittest.mock import patch
 
 try:
     import Part
@@ -12,7 +13,11 @@ try:
 except ImportError:  # pragma: no cover
     Part = Vector = None
 
-from Commands.SplitPanelCommand import _progressive_four_part_split
+from Commands.SplitPanelCommand import (
+    _progressive_four_part_split,
+    _run_production_partition,
+)
+from Core.MacroSplitCore import MacroGrooveParameters
 from Core.ConnectivityRepair import (
     ComponentConnectivityObservation,
     RegionConnectivityDiagnosis,
@@ -25,7 +30,7 @@ from Core.SinuousSeamPath import SinuousSeamPathFinder
 @unittest.skipIf(Part is None, "FreeCAD Part module is unavailable")
 class ProgressiveSeamTopologyTests(unittest.TestCase):
     @staticmethod
-    def _case():
+    def _source():
         source = Part.makeBox(300.0, 300.0, 8.0)
         for x_value, y_value in (
             (152.0, 50.0), (152.0, 250.0),
@@ -34,6 +39,11 @@ class ProgressiveSeamTopologyTests(unittest.TestCase):
             source = source.cut(
                 Part.makeCylinder(8.0, 8.0, Vector(x_value, y_value, 0.0))
             )
+        return source
+
+    @classmethod
+    def _case(cls):
+        source = cls._source()
         finder = SinuousSeamPathFinder()
         candidates = finder.topology_shortlist(
             finder.generate(source), (0.0, 300.0, 0.0, 300.0)
@@ -55,23 +65,6 @@ class ProgressiveSeamTopologyTests(unittest.TestCase):
                     x=0.5 * (xmin + xmax), y=0.5 * (ymin + ymax)
                 )
         raise AssertionError(detour_id)
-
-    @staticmethod
-    def _invalid(plan, detour_id):
-        center = ProgressiveSeamTopologyTests._center_for(plan, detour_id)
-        solids = [SimpleNamespace(Volume=1.0, CenterOfMass=center)]
-        solids.extend(
-            SimpleNamespace(
-                Volume=1000.0 + index,
-                CenterOfMass=SimpleNamespace(x=150.0, y=150.0),
-            )
-            for index in range(4)
-        )
-        return SimpleNamespace(
-            solid_count=5,
-            shape=SimpleNamespace(Solids=tuple(solids)),
-            seam_plan=plan,
-        )
 
     @classmethod
     def _diagnosis(cls, plan, detours, *, slivers=0, region_index=2):
@@ -128,10 +121,18 @@ class ProgressiveSeamTopologyTests(unittest.TestCase):
 
         def validate(plan):
             if finder.detour_level(plan, "VDET_001") == 3:
-                return self._invalid(plan, "VDET_001")
+                raise RegionConnectivityError(self._diagnosis(
+                    plan, ("VDET_001", "HDET_001")
+                ))
             if finder.detour_level(plan, "HDET_001") == 3:
-                return self._invalid(plan, "HDET_001")
-            return SimpleNamespace(solid_count=4, seam_plan=plan)
+                raise RegionConnectivityError(self._diagnosis(
+                    plan, ("HDET_001",)
+                ))
+            return SimpleNamespace(
+                solid_count=4,
+                region_solid_counts=(1, 1, 1, 1),
+                seam_plan=plan,
+            )
 
         result = _progressive_four_part_split(
             finder, candidates, (0.0, 300.0, 0.0, 300.0), validate
@@ -155,16 +156,19 @@ class ProgressiveSeamTopologyTests(unittest.TestCase):
             )
             for report in path.hole_offset_reports
         ))
-        self.assertIn("VDET_001", diagnostics[0])
-        self.assertIn("HDET_001", diagnostics[1])
-        self.assertIn("accepted", diagnostics[2])
+        report = "\n".join(diagnostics)
+        self.assertIn("VDET_001", report)
+        self.assertIn("HDET_001", report)
+        self.assertIn("accepted", report)
         self.assertEqual(accepted.seam_plan.intersection_count, 1)
 
     def test_validation_limit_retains_bounded_failure(self):
         finder, candidates = self._case()
 
         def invalid(plan):
-            return self._invalid(plan, "VDET_001")
+            raise RegionConnectivityError(self._diagnosis(
+                plan, ("VDET_001", "HDET_001")
+            ))
 
         accepted, validations, *_rest = _progressive_four_part_split(
             finder, candidates, (0.0, 300.0, 0.0, 300.0), invalid,
@@ -178,13 +182,17 @@ class ProgressiveSeamTopologyTests(unittest.TestCase):
         values = iter((0.0, 0.0, 0.0, 31.0, 31.0, 31.0))
 
         def clock():
-            return next(values)
+            return next(values, 31.0)
 
         accepted, validations, *_rest = _progressive_four_part_split(
             finder,
             candidates,
             (0.0, 300.0, 0.0, 300.0),
-            lambda plan: self._invalid(plan, "VDET_001"),
+            lambda plan: (_ for _ in ()).throw(
+                RegionConnectivityError(self._diagnosis(
+                    plan, ("VDET_001", "HDET_001")
+                ))
+            ),
             time_budget_s=30.0,
             clock=clock,
         )
@@ -195,7 +203,11 @@ class ProgressiveSeamTopologyTests(unittest.TestCase):
         finder, candidates = self._case()
 
         def valid(plan):
-            return SimpleNamespace(solid_count=4, seam_plan=plan)
+            return SimpleNamespace(
+                solid_count=4,
+                region_solid_counts=(1, 1, 1, 1),
+                seam_plan=plan,
+            )
 
         accepted, validations, *_rest = _progressive_four_part_split(
             finder, candidates, (0.0, 300.0, 0.0, 300.0), valid
@@ -217,7 +229,11 @@ class ProgressiveSeamTopologyTests(unittest.TestCase):
                 raise RegionConnectivityError(self._diagnosis(
                     plan, ("HDET_001", "VDET_002")
                 ))
-            return SimpleNamespace(solid_count=4, seam_plan=plan)
+            return SimpleNamespace(
+                solid_count=4,
+                region_solid_counts=(1, 1, 1, 1),
+                seam_plan=plan,
+            )
 
         accepted, validations, _rejected, _success, diagnostics, _elapsed = (
             _progressive_four_part_split(
@@ -258,7 +274,11 @@ class ProgressiveSeamTopologyTests(unittest.TestCase):
                     plan,
                     ("VDET_001", "HDET_001", "VDET_002", "HDET_002"),
                 ))
-            return SimpleNamespace(solid_count=4, seam_plan=plan)
+            return SimpleNamespace(
+                solid_count=4,
+                region_solid_counts=(1, 1, 1, 1),
+                seam_plan=plan,
+            )
 
         accepted, validations, _r, _s, diagnostics, _e = (
             _progressive_four_part_split(
@@ -288,7 +308,11 @@ class ProgressiveSeamTopologyTests(unittest.TestCase):
                 raise RegionConnectivityError(self._diagnosis(
                     plan, ("VDET_001", "HDET_001", "VDET_002", "HDET_002")
                 ))
-            return SimpleNamespace(solid_count=4, seam_plan=plan)
+            return SimpleNamespace(
+                solid_count=4,
+                region_solid_counts=(1, 1, 1, 1),
+                seam_plan=plan,
+            )
 
         accepted, _v, _r, _s, diagnostics, _e = (
             _progressive_four_part_split(
@@ -302,6 +326,47 @@ class ProgressiveSeamTopologyTests(unittest.TestCase):
         self.assertTrue(any(
             "Region_4 became disconnected" in item for item in diagnostics
         ))
+
+    def test_production_partition_routes_seven_solids_into_repair(self):
+        source = self._source()
+        finder = SinuousSeamPathFinder()
+        calls = []
+
+        def cut_regions(_core, _source, _x, _y, _parameters, *, seam_plan):
+            calls.append(seam_plan)
+            if finder.detour_level(seam_plan, "VDET_001") == 3:
+                raise RegionConnectivityError(self._diagnosis(
+                    seam_plan,
+                    ("VDET_001", "HDET_001", "VDET_002", "HDET_002"),
+                    slivers=2,
+                ))
+            return SimpleNamespace(
+                solid_count=4,
+                region_solid_counts=(1, 1, 1, 1),
+                seam_plan=seam_plan,
+            )
+
+        with patch(
+            "Commands.SplitPanelCommand.MacroSplitCore.cut_regions",
+            autospec=True,
+            side_effect=cut_regions,
+        ):
+            outcome = _run_production_partition(
+                source,
+                0.0,
+                0.0,
+                MacroGrooveParameters(),
+                path_finder=finder,
+            )
+
+        self.assertGreaterEqual(len(calls), 2)
+        self.assertEqual(
+            outcome.macro_result.region_solid_counts, (1, 1, 1, 1)
+        )
+        report = "\n".join(outcome.diagnostics)
+        self.assertIn("7 raw, 2 slivers, 5 structural", report)
+        self.assertIn("Connectivity repair: step 1", report)
+        self.assertIn("R1 = 1 R2 = 1 R3 = 1 R4 = 1", report)
 
 
 if __name__ == "__main__":

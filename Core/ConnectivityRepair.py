@@ -270,12 +270,20 @@ def classify_region_components(diagnosis, panel_thickness_mm):
         )
         full_thickness = thickness_ratio >= 0.95
         silhouette_risk = component.touches_panel_exterior
+        sparse_cutter_crumb = (
+            component.volume_mm3
+            <= Settings.Split.MAX_SPARSE_CRUMB_VOLUME_MM3
+            and component.volume_ratio
+            <= Settings.Split.MAX_SPARSE_CRUMB_VOLUME_RATIO
+            and component.footprint_mm2
+            <= Settings.Split.MAX_SPARSE_CRUMB_FOOTPRINT_MM2
+        )
         is_sliver = (
             component.rank > 1
             and volume_ok
             and ratio_ok
-            and thickness_ok
             and footprint_ok
+            and (thickness_ok or sparse_cutter_crumb)
             and not silhouette_risk
         )
         classified.append(replace(

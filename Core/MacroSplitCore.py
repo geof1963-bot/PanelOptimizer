@@ -62,6 +62,7 @@ class MacroSplitResult:
     seam_plan: object | None
     partition_method: str = "global_double_cut"
     region_areas_mm2: tuple[float, ...] = ()
+    region_raw_solid_counts: tuple[int, ...] = ()
     region_solid_counts: tuple[int, ...] = ()
     region_discarded_sliver_counts: tuple[int, ...] = ()
     connectivity_repair_attempts: int = 0
@@ -362,15 +363,11 @@ class MacroSplitCore:
             surface_parts = []
             final_parts = []
             region_solid_counts = []
+            region_raw_solid_counts = []
             discarded_sliver_counts = []
             component_diagnostics = []
             original_exterior = self._original_exterior_surface(
                 panel_shape, zmin, zmax, Part, Vector
-            )
-            sliver_limit = (
-                profile.bottom_width_mm
-                * profile.top_width_mm
-                * max(zmax - zmin, 1.0)
             )
             for index, tool in enumerate(region_tools, start=1):
                 owned = panel_shape.common(tool)
@@ -403,26 +400,33 @@ class MacroSplitCore:
                 except Exception:
                     pass
                 raw_solids = tuple(final_part.Solids)
-                substantial = tuple(
-                    solid for solid in raw_solids
-                    if float(solid.Volume) > sliver_limit * 1000.0
-                )
-                slivers = tuple(
-                    solid for solid in raw_solids
-                    if float(solid.Volume) <= sliver_limit
-                )
-                if len(substantial) == 1 and len(slivers) == len(raw_solids) - 1:
-                    final_solid = substantial[0]
-                    discarded = len(slivers)
-                elif len(raw_solids) == 1:
+                if len(raw_solids) == 1:
                     final_solid = raw_solids[0]
                     discarded = 0
                 else:
-                    raise SplitOperationError(
-                        f"Region_{index} extraction is genuinely disconnected: "
-                        f"{len(raw_solids)} solids."
+                    diagnosis = diagnose_region_connectivity(
+                        index,
+                        raw_solids,
+                        seam_plan,
+                        (xmin, ymin, zmin, xmax, ymax, zmax),
+                        zmax - zmin,
+                        original_exterior,
                     )
+                    component_diagnostics.append(diagnosis)
+                    structural = diagnosis.structural_components
+                    if len(structural) != 1:
+                        raise RegionConnectivityError(diagnosis)
+                    ordered_final = tuple(sorted(
+                        raw_solids,
+                        key=lambda item: float(item.Volume),
+                        reverse=True,
+                    ))
+                    final_solid = ordered_final[structural[0].rank - 1]
+                    discarded = diagnosis.sliver_count
                 region_solid_counts.append(1)
+                region_raw_solid_counts.append(
+                    len(raw_solids) + ownership_discarded
+                )
                 discarded_sliver_counts.append(discarded + ownership_discarded)
                 surface_parts.append(surface_part.Solids[0])
                 final_parts.append(final_solid)
@@ -453,6 +457,7 @@ class MacroSplitCore:
             seam_plan=seam_plan,
             partition_method="sinuous_xy_regions",
             region_areas_mm2=tuple(region_areas),
+            region_raw_solid_counts=tuple(region_raw_solid_counts),
             region_solid_counts=tuple(region_solid_counts),
             region_discarded_sliver_counts=tuple(discarded_sliver_counts),
             region_component_diagnostics=tuple(component_diagnostics),

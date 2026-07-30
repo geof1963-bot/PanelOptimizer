@@ -118,6 +118,9 @@ class SplitSettings:
     # fragments can therefore have sparse boxes much larger than volume/Z.
     MAX_SLIVER_FOOTPRINT_MM2: float = 300.0
     MAX_SLIVER_BOUNDARY_DISTANCE_MM: float = 2.5
+    MAX_SPARSE_CRUMB_VOLUME_MM3: float = 1.0
+    MAX_SPARSE_CRUMB_VOLUME_RATIO: float = 0.00001
+    MAX_SPARSE_CRUMB_FOOTPRINT_MM2: float = 1.0
     PANEL_EXTERIOR_TOLERANCE_MM: float = 0.05
 
 

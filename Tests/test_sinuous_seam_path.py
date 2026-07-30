@@ -347,34 +347,6 @@ class SinuousSeamPathTests(unittest.TestCase):
         self.assertLess(plan.vertical.longest_straight_segment_mm, 100.0)
         self.assertFalse(_self_intersects(plan.vertical.points))
 
-    def test_unexpected_solid_is_mapped_to_nearest_detour(self):
-        source = Part.makeBox(300.0, 300.0, 8.0)
-        for y_value in (50.0, 250.0):
-            source = source.cut(
-                Part.makeCylinder(8.0, 8.0, Vector(152.0, y_value, 0.0))
-            )
-        finder = SinuousSeamPathFinder()
-        plan = finder.generate(source)
-        first_bounds = plan.vertical.followed_feature_bounds_mm[0]
-        center = SimpleNamespace(
-            x=0.5 * (first_bounds[0] + first_bounds[2]),
-            y=0.5 * (first_bounds[1] + first_bounds[3]),
-        )
-        solids = [
-            SimpleNamespace(Volume=1.0, CenterOfMass=center),
-            *(
-                SimpleNamespace(
-                    Volume=1000.0 + index,
-                    CenterOfMass=SimpleNamespace(x=150.0, y=150.0),
-                )
-                for index in range(4)
-            ),
-        ]
-        result = SimpleNamespace(shape=SimpleNamespace(Solids=solids))
-        self.assertEqual(
-            finder.likely_problem_detours(plan, result)[0], "VDET_001"
-        )
-
     def test_longer_monotone_contour_direction_is_preferred(self):
         points = tuple(Point2D(*point) for point in (
             (0.0, 0.0), (0.0, 10.0), (0.0, 20.0), (10.0, 20.0),
