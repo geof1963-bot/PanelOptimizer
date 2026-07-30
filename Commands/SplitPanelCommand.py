@@ -411,6 +411,21 @@ class PanelOptimizerSplitPanelCommand:
                         f"touches exterior = "
                         f"{component.touches_panel_exterior}; action = {action}\n"
                     )
+                    if component.rank > 1:
+                        FreeCAD.Console.PrintMessage(
+                            "    Sliver classifier: "
+                            f"volume_ok = {component.volume_ok}; "
+                            f"ratio_ok = {component.volume_ratio_ok}; "
+                            f"thickness_ok = {component.thickness_ok}; "
+                            f"footprint_ok = {component.footprint_ok}; "
+                            f"opening_proximity_ok = "
+                            f"{component.opening_proximity_ok}; "
+                            f"original_exterior_contact = "
+                            f"{component.touches_panel_exterior}; "
+                            f"silhouette_risk = {component.silhouette_risk}; "
+                            f"full_thickness = {component.full_thickness}; "
+                            f"classification = {component.classification}\n"
+                        )
                 FreeCAD.Console.PrintMessage(
                     f"Region_{diagnosis.region_index} structural "
                     "connectivity: OK\n"

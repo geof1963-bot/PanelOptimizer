@@ -363,6 +363,9 @@ class MacroSplitCore:
             region_solid_counts = []
             discarded_sliver_counts = []
             component_diagnostics = []
+            original_exterior = self._original_exterior_surface(
+                panel_shape, zmin, zmax, Part, Vector
+            )
             sliver_limit = (
                 profile.bottom_width_mm
                 * profile.top_width_mm
@@ -379,6 +382,7 @@ class MacroSplitCore:
                         seam_plan,
                         (xmin, ymin, zmin, xmax, ymax, zmax),
                         zmax - zmin,
+                        original_exterior,
                     )
                     component_diagnostics.append(diagnosis)
                     structural = diagnosis.structural_components
@@ -404,6 +408,7 @@ class MacroSplitCore:
                                 seam_plan,
                                 (xmin, ymin, zmin, xmax, ymax, zmax),
                                 zmax - zmin,
+                                original_exterior,
                             )
                         )
                     owned = sorted(
@@ -474,6 +479,33 @@ class MacroSplitCore:
             region_discarded_sliver_counts=tuple(discarded_sliver_counts),
             region_component_diagnostics=tuple(component_diagnostics),
         )
+
+    @staticmethod
+    def _original_exterior_surface(panel_shape, zmin, zmax, Part, Vector):
+        """Extrude the original top face's outer wire through panel Z."""
+        candidates = []
+        for face in panel_shape.Faces:
+            bounds = face.BoundBox
+            if abs(float(bounds.ZMax) - zmax) > 1.0e-6:
+                continue
+            if abs(float(bounds.ZMin) - zmax) > 1.0e-6:
+                continue
+            try:
+                wire = face.OuterWire
+                footprint = (
+                    float(wire.BoundBox.XLength)
+                    * float(wire.BoundBox.YLength)
+                )
+                candidates.append((footprint, wire))
+            except Exception:
+                continue
+        if not candidates:
+            return None
+        outer_wire = max(candidates, key=lambda item: item[0])[1]
+        try:
+            return outer_wire.extrude(Vector(0.0, 0.0, zmin - zmax))
+        except Exception:
+            return Part.makeCompound(tuple(outer_wire.Edges))
 
     @classmethod
     def _region_tools(

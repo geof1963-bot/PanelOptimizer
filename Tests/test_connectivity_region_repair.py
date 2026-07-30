@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import math
 import tempfile
 import time
 import unittest
@@ -16,7 +17,10 @@ except ImportError:  # pragma: no cover
 
 from Commands.SplitPanelCommand import _progressive_four_part_split
 from Core.DowelPlanner import DowelPlanner
-from Core.ConnectivityRepair import diagnose_region_connectivity
+from Core.ConnectivityRepair import (
+    classify_region_components,
+    diagnose_region_connectivity,
+)
 from Core.Exceptions import RegionConnectivityError
 from Core.LipBuilder import LipBuilder
 from Core.MacroPartExtractor import MacroPartExtractor
@@ -171,6 +175,100 @@ class ConnectivityRegionRepairTests(unittest.TestCase):
         self.assertLess(evidence.volume_ratio, 0.0002)
         self.assertFalse(evidence.spans_substantial_thickness)
 
+    def test_exact_real_metrics_are_non_structural(self):
+        sliver = Part.makeBox(
+            3.0, 4.378457, 1.4, Vector(295.5, 80.0, 0.0)
+        )
+        evidence = self._classify_secondary(sliver)
+        exact = replace(
+            evidence,
+            volume_mm3=18.389520,
+            footprint_mm2=259.070744,
+            thickness_mm=1.400001,
+            volume_ratio=0.00004307,
+            opening_distance_mm=1.419807,
+            touches_panel_exterior=False,
+        )
+        diagnosis = classify_region_components(
+            replace(
+                diagnose_region_connectivity(
+                    1,
+                    (
+                        Part.makeBox(
+                            267.0, 199.979775, 8.0,
+                            Vector(20.0, 100.0, 0.0),
+                        ),
+                        sliver,
+                    ),
+                    SinuousSeamPathFinder().topology_shortlist(
+                        SinuousSeamPathFinder().generate(
+                            Part.makeBox(594.0, 594.0, 8.0)
+                        ),
+                        (0.0, 594.0, 0.0, 594.0),
+                    )[0],
+                    (0.0, 0.0, 0.0, 594.0, 594.0, 8.0),
+                    8.0,
+                ),
+                components=(
+                    replace(evidence, rank=1, classification="STRUCTURAL"),
+                    exact,
+                ),
+            ),
+            8.0,
+        )
+        result = diagnosis.secondary
+        self.assertTrue(result.volume_ok)
+        self.assertTrue(result.volume_ratio_ok)
+        self.assertTrue(result.thickness_ok)
+        self.assertTrue(result.footprint_ok)
+        self.assertTrue(result.opening_proximity_ok)
+        self.assertFalse(result.touches_panel_exterior)
+        self.assertFalse(result.silhouette_risk)
+        self.assertFalse(result.full_thickness)
+        self.assertEqual(result.classification, "NON_STRUCTURAL_SLIVER")
+
+    def test_internal_boundary_proximity_does_not_make_sliver_structural(self):
+        sliver = Part.makeBox(
+            3.0, 4.378457, 1.4, Vector(295.5, 80.0, 0.0)
+        )
+        evidence = self._classify_secondary(sliver)
+        for changes in (
+            {"seam_distance_mm": 0.0, "opening_distance_mm": math.inf},
+            {"seam_distance_mm": 20.0, "opening_distance_mm": 0.0},
+            {"seam_distance_mm": 20.0, "opening_distance_mm": math.inf},
+        ):
+            diagnosis = classify_region_components(
+                replace(
+                    diagnose_region_connectivity(
+                        1,
+                        (
+                            Part.makeBox(
+                                267.0, 199.979775, 8.0,
+                                Vector(20.0, 100.0, 0.0),
+                            ),
+                            sliver,
+                        ),
+                        SinuousSeamPathFinder().topology_shortlist(
+                            SinuousSeamPathFinder().generate(
+                                Part.makeBox(594.0, 594.0, 8.0)
+                            ),
+                            (0.0, 594.0, 0.0, 594.0),
+                        )[0],
+                        (0.0, 0.0, 0.0, 594.0, 594.0, 8.0),
+                        8.0,
+                    ),
+                    components=(
+                        replace(evidence, rank=1, classification="STRUCTURAL"),
+                        replace(evidence, **changes),
+                    ),
+                ),
+                8.0,
+            )
+            self.assertEqual(
+                diagnosis.secondary.classification,
+                "NON_STRUCTURAL_SLIVER",
+            )
+
     def test_meaningful_1922_mm3_is_structural(self):
         island = Part.makeBox(15.5, 15.5, 8.0, Vector(289.0, 80.0, 0.0))
         evidence = self._classify_secondary(island)
@@ -199,13 +297,45 @@ class ConnectivityRegionRepairTests(unittest.TestCase):
         self.assertTrue(evidence.touches_panel_exterior)
         self.assertEqual(evidence.classification, "STRUCTURAL")
 
+    def test_original_outer_wire_contact_is_structural(self):
+        panel = Part.makeBox(594.0, 594.0, 8.0)
+        exterior_surface = MacroSplitCore._original_exterior_surface(
+            panel, 0.0, 8.0, Part, Vector
+        )
+        main = Part.makeBox(
+            267.0, 199.979775, 8.0, Vector(20.0, 100.0, 0.0)
+        )
+        fragment = Part.makeBox(3.0, 4.0, 1.4, Vector(0.0, 80.0, 0.0))
+        finder = SinuousSeamPathFinder()
+        plan = finder.topology_shortlist(
+            finder.generate(panel), (0.0, 594.0, 0.0, 594.0)
+        )[0]
+        evidence = diagnose_region_connectivity(
+            1,
+            (main, fragment),
+            plan,
+            (0.0, 0.0, 0.0, 594.0, 594.0, 8.0),
+            8.0,
+            exterior_surface,
+        ).secondary
+        self.assertTrue(evidence.touches_panel_exterior)
+        self.assertTrue(evidence.silhouette_risk)
+        self.assertEqual(evidence.classification, "STRUCTURAL")
+
     def test_sliver_only_region_does_not_trigger_connectivity_repair(self):
         panel = Part.makeBox(594.0, 594.0, 8.0)
         main = panel.cut(
-            Part.makeBox(6.0, 8.0, 8.0, Vector(292.0, 78.0, 0.0))
+            Part.makeBox(3.0, 260.1, 8.0, Vector(294.5, 19.5, 0.0))
         )
         sliver = Part.makeBox(
-            3.0, 4.378457, 1.4, Vector(293.5, 80.0, 0.0)
+            1.0, 259.070744, 0.05, Vector(295.5, 20.0, 0.0)
+        ).fuse(
+            Part.makeBox(
+                1.0,
+                4.02665094322152,
+                1.350001,
+                Vector(295.5, 20.0, 0.05),
+            )
         )
         source = Part.makeCompound((main, sliver))
         before = source.exportBrepToString()
@@ -237,7 +367,9 @@ class ConnectivityRegionRepairTests(unittest.TestCase):
             if item.classification == "NON_STRUCTURAL_SLIVER"
         )
         self.assertEqual(len(ignored), 1)
-        self.assertAlmostEqual(ignored[0].volume_mm3, 18.3895194, places=5)
+        self.assertAlmostEqual(ignored[0].volume_mm3, 18.389520, places=5)
+        self.assertAlmostEqual(ignored[0].footprint_mm2, 259.070744, places=5)
+        self.assertAlmostEqual(ignored[0].thickness_mm, 1.400001, places=5)
         meshes = build_macro_mesh_parts(result)
         self.assertTrue(all(item.after.is_solid for item in meshes))
         self.assertTrue(all(item.after.open_edge_count == 0 for item in meshes))

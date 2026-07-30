@@ -41,6 +41,13 @@ class ComponentConnectivityObservation:
     touches_panel_exterior: bool
     spans_substantial_thickness: bool
     classification: str
+    volume_ok: bool = False
+    volume_ratio_ok: bool = False
+    thickness_ok: bool = False
+    footprint_ok: bool = False
+    opening_proximity_ok: bool = False
+    silhouette_risk: bool = False
+    full_thickness: bool = False
 
     @property
     def is_structural(self) -> bool:
@@ -96,7 +103,14 @@ class RegionConnectivityDiagnosis:
                 f"{component.opening_distance_mm:.6f} mm; footprint "
                 f"{component.footprint_mm2:.6f} mm^2; thickness "
                 f"{component.thickness_mm:.6f} mm; volume ratio "
-                f"{component.volume_ratio:.8f}; classification "
+                f"{component.volume_ratio:.8f}; volume_ok "
+                f"{component.volume_ok}; ratio_ok "
+                f"{component.volume_ratio_ok}; thickness_ok "
+                f"{component.thickness_ok}; footprint_ok "
+                f"{component.footprint_ok}; original exterior contact "
+                f"{component.touches_panel_exterior}; silhouette risk "
+                f"{component.silhouette_risk}; full thickness "
+                f"{component.full_thickness}; classification "
                 f"{component.classification}"
             )
         return (
@@ -116,7 +130,12 @@ class RegionConnectivityDiagnosis:
 
 
 def diagnose_region_connectivity(
-    region_index, solids, seam_plan, panel_bounds=None, panel_thickness_mm=None
+    region_index,
+    solids,
+    seam_plan,
+    panel_bounds=None,
+    panel_thickness_mm=None,
+    original_exterior=None,
 ):
     """Describe disconnected solids and map each to the nearest seam section."""
     ordered = tuple(sorted(solids, key=lambda item: float(item.Volume), reverse=True))
@@ -165,8 +184,8 @@ def diagnose_region_connectivity(
             footprint_mm2=footprint,
             thickness_mm=thickness,
             volume_ratio=float(solid.Volume) / main_volume,
-            touches_panel_exterior=_touches_panel_exterior(
-                bounds_mm, panel_bounds
+            touches_panel_exterior=_touches_original_exterior(
+                solid, bounds_mm, panel_bounds, original_exterior
             ),
             spans_substantial_thickness=(
                 thickness / max(panel_thickness_mm, 1.0e-12)
@@ -184,26 +203,40 @@ def classify_region_components(diagnosis, panel_thickness_mm):
     """Classify secondary solids using combined conservative evidence.
 
     A fragment is ignored only when it is small in absolute and relative
-    volume, shallow, small in XY, close to a seam or artistic boundary, and
-    does not touch the source panel exterior.  The main component is always
-    structural.
+    volume, shallow, small in XY, and does not touch the original panel's
+    outer silhouette. Seam, artistic-opening, and region-tool proximity are
+    diagnostic context only. The main component is always structural.
     """
     classified = []
     for component in diagnosis.components:
-        near_boundary = min(
-            component.seam_distance_mm, component.opening_distance_mm
-        ) <= Settings.Split.MAX_SLIVER_BOUNDARY_DISTANCE_MM
         thickness_ratio = component.thickness_mm / max(
             float(panel_thickness_mm), 1.0e-12
         )
+        volume_ok = (
+            component.volume_mm3 <= Settings.Split.MAX_SLIVER_VOLUME_MM3
+        )
+        ratio_ok = (
+            component.volume_ratio <= Settings.Split.MAX_SLIVER_VOLUME_RATIO
+        )
+        thickness_ok = (
+            thickness_ratio <= Settings.Split.MAX_SLIVER_THICKNESS_RATIO
+        )
+        footprint_ok = (
+            component.footprint_mm2 <= Settings.Split.MAX_SLIVER_FOOTPRINT_MM2
+        )
+        opening_proximity_ok = (
+            component.opening_distance_mm
+            <= Settings.Split.MAX_SLIVER_BOUNDARY_DISTANCE_MM
+        )
+        full_thickness = thickness_ratio >= 0.95
+        silhouette_risk = component.touches_panel_exterior
         is_sliver = (
             component.rank > 1
-            and component.volume_mm3 <= Settings.Split.MAX_SLIVER_VOLUME_MM3
-            and component.volume_ratio <= Settings.Split.MAX_SLIVER_VOLUME_RATIO
-            and thickness_ratio <= Settings.Split.MAX_SLIVER_THICKNESS_RATIO
-            and component.footprint_mm2 <= Settings.Split.MAX_SLIVER_FOOTPRINT_MM2
-            and near_boundary
-            and not component.touches_panel_exterior
+            and volume_ok
+            and ratio_ok
+            and thickness_ok
+            and footprint_ok
+            and not silhouette_risk
         )
         classified.append(replace(
             component,
@@ -213,6 +246,13 @@ def classify_region_components(diagnosis, panel_thickness_mm):
             classification=(
                 "NON_STRUCTURAL_SLIVER" if is_sliver else "STRUCTURAL"
             ),
+            volume_ok=volume_ok,
+            volume_ratio_ok=ratio_ok,
+            thickness_ok=thickness_ok,
+            footprint_ok=footprint_ok,
+            opening_proximity_ok=opening_proximity_ok,
+            silhouette_risk=silhouette_risk,
+            full_thickness=full_thickness,
         ))
     return replace(diagnosis, components=tuple(classified))
 
@@ -228,8 +268,21 @@ def _combined_bounds(solids):
     )
 
 
-def _touches_panel_exterior(bounds, panel_bounds):
+def _touches_original_exterior(solid, bounds, panel_bounds, exterior_shape):
+    """Check only the original panel's outer XY silhouette.
+
+    The real split pipeline supplies a surface extruded from the original top
+    face's ``OuterWire``. Hole wires, seams, and region tools are absent from
+    that shape. Bounds are a conservative fallback for isolated classifier
+    callers which do not have source topology.
+    """
     tolerance = Settings.Split.PANEL_EXTERIOR_TOLERANCE_MM
+    if exterior_shape is not None:
+        try:
+            distance, _points, _info = solid.distToShape(exterior_shape)
+            return float(distance) <= tolerance
+        except Exception:
+            pass
     return any(
         abs(value - exterior) <= tolerance
         for value, exterior in (

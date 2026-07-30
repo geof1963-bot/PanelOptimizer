@@ -136,6 +136,13 @@ they are omitted from the printable region and recorded in extraction
 diagnostics. The existing watertight, single-component mesh and reopened-STL
 checks remain the final authority for all four parts.
 
+V4.74C records every individual classifier predicate in the extraction
+diagnostics. Sparse fragments use a conservative 300 mm² bounding-box
+footprint limit, while opening and seam proximity are supporting evidence and
+not structural vetoes. Silhouette protection is evaluated against a surface
+extruded from the original panel top face's `OuterWire`; internal artistic-hole
+wires and transient seam/region boundaries are not included.
+
 ---
 
 # Printing Constraints
