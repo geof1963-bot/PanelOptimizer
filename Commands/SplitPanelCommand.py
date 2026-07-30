@@ -9,7 +9,7 @@ import time
 import FreeCAD
 import FreeCADGui
 
-from Core.Exceptions import PanelOptimizerError
+from Core.Exceptions import PanelOptimizerError, SplitOperationError
 from Core.DowelPlanner import DowelPlanner
 from Core.LipBuilder import LipBuilder, LipParameters
 from Core.MacroPartExtractor import MacroPartExtractor
@@ -58,7 +58,24 @@ def _progressive_four_part_split(
         seen.add(signature)
         attempt_started = clock()
         validations += 1
-        attempt = exact_validator(candidate)
+        try:
+            attempt = exact_validator(candidate)
+        except SplitOperationError as error:
+            rejected_seconds += clock() - attempt_started
+            diagnostics.append(
+                f"Seam candidate {validations}: region extraction rejected: {error}"
+            )
+            for fallback in reserve:
+                fallback_signature = (
+                    fallback.vertical.points,
+                    fallback.horizontal.points,
+                    fallback.vertical.detour_levels,
+                    fallback.horizontal.detour_levels,
+                )
+                if fallback_signature not in seen:
+                    queue.append(fallback)
+                    break
+            continue
         elapsed = clock() - attempt_started
         if attempt.solid_count == 4:
             accepted = attempt
@@ -172,7 +189,7 @@ class PanelOptimizerSplitPanelCommand:
             timings["seams"] = time.perf_counter() - started
             macro_result = None
             def validate_candidate(candidate):
-                return MacroSplitCore().cut(
+                return MacroSplitCore().cut_regions(
                     source_object.Shape,
                     self._vertical_offset,
                     self._horizontal_offset,
@@ -201,8 +218,8 @@ class PanelOptimizerSplitPanelCommand:
             if macro_result is None:
                 detail = " ".join(topology_attempts[-3:])
                 raise PanelOptimizerError(
-                    "No four-part sinuous route remained after bounded local "
-                    f"detour simplification. {detail}"
+                    "No seam guide produced four valid XY ownership regions. "
+                    f"{detail}"
                 )
             planner = DowelPlanner()
             started = time.perf_counter()
@@ -265,6 +282,27 @@ class PanelOptimizerSplitPanelCommand:
             )
             for diagnostic in topology_attempts:
                 FreeCAD.Console.PrintMessage(diagnostic + "\n")
+            FreeCAD.Console.PrintMessage(
+                "[1] Seam guides found\n"
+                f"Vertical features: {len(macro_result.seam_plan.vertical.followed_feature_ids)}\n"
+                f"Horizontal features: {len(macro_result.seam_plan.horizontal.followed_feature_ids)}\n"
+                "[2] Regions built\n"
+                + "\n".join(
+                    f"R{index} area: {area:.3f} mm^2"
+                    for index, area in enumerate(
+                        macro_result.region_areas_mm2, start=1
+                    )
+                )
+                + "\n[3] Region extraction\n"
+                + "\n".join(
+                    f"Part_{index}: {count} solid, discarded cutter crumbs "
+                    f"{macro_result.region_discarded_sliver_counts[index - 1]}"
+                    for index, count in enumerate(
+                        macro_result.region_solid_counts, start=1
+                    )
+                )
+                + "\n"
+            )
             for path in (
                 macro_result.seam_plan.vertical,
                 macro_result.seam_plan.horizontal,

@@ -138,7 +138,7 @@ class MacroPartExtractor:
         immutable_result = SplitResult(
             result_id=result_id,
             source_id=stable_source_id,
-            strategy="macro_full_depth_cut",
+            strategy=macro_result.partition_method,
             cut_x_mm=macro_result.cut_x_mm,
             cut_y_mm=macro_result.cut_y_mm,
             maximum_width_mm=maximum_width,
@@ -153,7 +153,7 @@ class MacroPartExtractor:
         execution = SplitExecution(
             result=immutable_result,
             shapes=ordered,
-            partition_method="MacroSplitCore.result.Solids",
+            partition_method=macro_result.partition_method,
             initial_partition_solid_count=4,
             solids_per_quadrant=(1, 1, 1, 1),
         )
@@ -172,6 +172,7 @@ class MacroPartExtractor:
             ),
             final_volume_mm3=final_volume,
             extraction_delta_mm3=delta,
+            extraction_method=macro_result.partition_method,
         )
 
     @staticmethod

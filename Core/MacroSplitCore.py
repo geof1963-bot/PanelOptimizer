@@ -55,6 +55,10 @@ class MacroSplitResult:
     separation_width_mm: float
     cleanup_applied: bool
     seam_plan: object | None
+    partition_method: str = "global_double_cut"
+    region_areas_mm2: tuple[float, ...] = ()
+    region_solid_counts: tuple[int, ...] = ()
+    region_discarded_sliver_counts: tuple[int, ...] = ()
 
 
 class MacroSplitCore:
@@ -279,6 +283,361 @@ class MacroSplitCore:
             cleanup_applied=cleanup_applied,
             seam_plan=seam_plan,
         )
+
+    def cut_regions(
+        self,
+        source_shape: object,
+        vertical_offset: float = 0.0,
+        horizontal_offset: float = 0.0,
+        parameters: MacroGrooveParameters = MacroGrooveParameters(),
+        seam_plan: object | None = None,
+    ) -> MacroSplitResult:
+        """Extract four seam-owned regions, then apply the unchanged cutters."""
+        if source_shape is None or not hasattr(source_shape, "BoundBox"):
+            raise SplitSourceError("Region split requires a shape-like source.")
+        if seam_plan is None:
+            raise SplitOperationError("Region split requires sinuous seam guides.")
+        offset_x = self._finite(vertical_offset, "vertical offset")
+        offset_y = self._finite(horizontal_offset, "horizontal offset")
+        profile = self._validated_parameters(parameters)
+        try:
+            import Part
+            from FreeCAD import Vector
+
+            panel_shape = source_shape.copy()
+            bounds = panel_shape.BoundBox
+            xmin, xmax = float(bounds.XMin), float(bounds.XMax)
+            ymin, ymax = float(bounds.YMin), float(bounds.YMax)
+            zmin, zmax = float(bounds.ZMin), float(bounds.ZMax)
+            source_volume = float(panel_shape.Volume)
+        except Exception as error:
+            raise SplitSourceError("Unable to copy or measure region source.") from error
+        real_center_x = 0.5 * (xmin + xmax)
+        real_center_y = 0.5 * (ymin + ymax)
+        cut_x = real_center_x + offset_x
+        cut_y = real_center_y + offset_y
+        self._validate_seam_plan(seam_plan, cut_x, cut_y)
+        z_bottom = zmax - profile.groove_depth_mm
+        below_panel = zmin - profile.overlap_mm
+        try:
+            # Ownership boundaries meet at the middle of the asymmetric
+            # full-depth slot.  The subsequent unchanged cutter removes that
+            # overlap boundary, reproducing the original 0.5 mm separation.
+            ownership_offset = profile.bottom_width_mm
+            region_tools, region_areas = self._region_tools(
+                seam_plan,
+                (xmin, xmax, ymin, ymax),
+                zmin,
+                zmax,
+                profile.overlap_mm,
+                ownership_offset,
+                Part,
+                Vector,
+            )
+            surface_vertical = self._segmented_path_cutter(
+                seam_plan.vertical, profile, zmax, z_bottom, below_panel,
+                False, Part, Vector,
+            )
+            surface_horizontal = self._segmented_path_cutter(
+                seam_plan.horizontal, profile, zmax, z_bottom, below_panel,
+                False, Part, Vector,
+            )
+            full_vertical = self._segmented_path_cutter(
+                seam_plan.vertical, profile, zmax, z_bottom, below_panel,
+                True, Part, Vector,
+            )
+            full_horizontal = self._segmented_path_cutter(
+                seam_plan.horizontal, profile, zmax, z_bottom, below_panel,
+                True, Part, Vector,
+            )
+            surface_parts = []
+            final_parts = []
+            region_solid_counts = []
+            discarded_sliver_counts = []
+            sliver_limit = (
+                profile.bottom_width_mm
+                * profile.top_width_mm
+                * max(zmax - zmin, 1.0)
+            )
+            for index, tool in enumerate(region_tools, start=1):
+                owned = panel_shape.common(tool)
+                owned_solids = tuple(owned.Solids)
+                if len(owned_solids) != 1:
+                    raise SplitOperationError(
+                        f"Region_{index} ownership is disconnected: "
+                        f"{len(owned_solids)} solids."
+                    )
+                surface_part = owned.cut(surface_vertical).cut(surface_horizontal)
+                final_part = owned.cut(full_vertical).cut(full_horizontal)
+                try:
+                    surface_part = surface_part.removeSplitter()
+                    final_part = final_part.removeSplitter()
+                except Exception:
+                    pass
+                raw_solids = tuple(final_part.Solids)
+                substantial = tuple(
+                    solid for solid in raw_solids
+                    if float(solid.Volume) > sliver_limit * 1000.0
+                )
+                slivers = tuple(
+                    solid for solid in raw_solids
+                    if float(solid.Volume) <= sliver_limit
+                )
+                if len(substantial) == 1 and len(slivers) == len(raw_solids) - 1:
+                    final_solid = substantial[0]
+                    discarded = len(slivers)
+                elif len(raw_solids) == 1:
+                    final_solid = raw_solids[0]
+                    discarded = 0
+                else:
+                    raise SplitOperationError(
+                        f"Region_{index} extraction is genuinely disconnected: "
+                        f"{len(raw_solids)} solids."
+                    )
+                region_solid_counts.append(1)
+                discarded_sliver_counts.append(discarded)
+                surface_parts.append(surface_part.Solids[0])
+                final_parts.append(final_solid)
+            surface_result = Part.makeCompound(tuple(surface_parts))
+            result = Part.makeCompound(tuple(final_parts))
+        except SplitOperationError:
+            raise
+        except Exception as error:
+            raise SplitOperationError("Region-based seam extraction failed.") from error
+        result_volume = float(result.Volume)
+        surface_volume = float(surface_result.Volume)
+        return MacroSplitResult(
+            shape=result,
+            real_center_x_mm=real_center_x,
+            real_center_y_mm=real_center_y,
+            cut_x_mm=cut_x,
+            cut_y_mm=cut_y,
+            vertical_offset_mm=offset_x,
+            horizontal_offset_mm=offset_y,
+            source_volume_mm3=source_volume,
+            surface_groove_result_volume_mm3=surface_volume,
+            surface_groove_removed_volume_mm3=source_volume - surface_volume,
+            additional_separation_removed_volume_mm3=surface_volume - result_volume,
+            result_volume_mm3=result_volume,
+            solid_count=len(tuple(result.Solids)),
+            separation_width_mm=profile.bottom_width_mm,
+            cleanup_applied=True,
+            seam_plan=seam_plan,
+            partition_method="sinuous_xy_regions",
+            region_areas_mm2=tuple(region_areas),
+            region_solid_counts=tuple(region_solid_counts),
+            region_discarded_sliver_counts=tuple(discarded_sliver_counts),
+        )
+
+    @classmethod
+    def _region_tools(
+        cls, seam_plan, bounds, zmin, zmax, overlap, ownership_offset,
+        Part, Vector,
+    ):
+        """Validate four explicit XY ownership polygons and extrude them."""
+        xmin, xmax, ymin, ymax = bounds
+        vertical = cls._offset_ownership_path(
+            seam_plan.vertical, ownership_offset
+        )
+        horizontal = cls._offset_ownership_path(
+            seam_plan.horizontal, ownership_offset
+        )
+        vertical = (
+            (vertical[0][0], ymin),
+            *vertical[1:-1],
+            (vertical[-1][0], ymax),
+        )
+        horizontal = (
+            (xmin, horizontal[0][1]),
+            *horizontal[1:-1],
+            (xmax, horizontal[-1][1]),
+        )
+        vertical_low, vertical_high, horizontal_left, horizontal_right = (
+            cls._split_region_paths(vertical, horizontal)
+        )
+        polygons = (
+            vertical_low
+            + tuple(reversed(horizontal_left[:-1]))
+            + ((xmin, ymin),),
+            (vertical_low[0], (xmax, ymin), horizontal_right[-1])
+            + tuple(reversed(horizontal_right[:-1]))
+            + tuple(reversed(vertical_low[:-1])),
+            (horizontal_left[0], (xmin, ymax), vertical_high[-1])
+            + tuple(reversed(vertical_high[:-1]))
+            + tuple(reversed(horizontal_left[:-1])),
+            vertical_high
+            + ((xmax, ymax), horizontal_right[-1])
+            + tuple(reversed(horizontal_right[:-1])),
+        )
+        base_z = zmin - overlap
+        faces = []
+        for index, polygon in enumerate(polygons, start=1):
+            compact = cls._compact_xy_polygon(polygon)
+            if len(compact) < 3 or cls._xy_self_intersects(compact):
+                raise SplitOperationError(
+                    f"Region_{index} 2D boundary is malformed."
+                )
+            vectors = tuple(Vector(x, y, base_z) for x, y in compact)
+            face = Part.Face(Part.makePolygon(vectors + (vectors[0],)))
+            if face.isNull() or not face.isValid() or float(face.Area) <= 1.0e-7:
+                raise SplitOperationError(
+                    f"Region_{index} 2D boundary has no valid positive area."
+                )
+            faces.append(face)
+        rectangle = Part.Face(Part.makePolygon((
+            Vector(xmin, ymin, base_z), Vector(xmax, ymin, base_z),
+            Vector(xmax, ymax, base_z), Vector(xmin, ymax, base_z),
+            Vector(xmin, ymin, base_z),
+        )))
+        area_tolerance = max(1.0e-5, float(rectangle.Area) * 1.0e-8)
+        for first in range(4):
+            outside = float(faces[first].cut(rectangle).Area)
+            if outside > area_tolerance:
+                raise SplitOperationError(
+                    f"Region_{first + 1} extends outside the panel domain."
+                )
+            for second in range(first + 1, 4):
+                if float(faces[first].common(faces[second]).Area) > area_tolerance:
+                    raise SplitOperationError(
+                        f"Regions {first + 1} and {second + 1} overlap."
+                    )
+        areas = tuple(float(face.Area) for face in faces)
+        if abs(sum(areas) - float(rectangle.Area)) > area_tolerance:
+            raise SplitOperationError("Four XY regions do not cover the panel domain.")
+        height = (zmax - zmin) + 2.0 * overlap
+        tools = tuple(face.extrude(Vector(0.0, 0.0, height)) for face in faces)
+        return tools, areas
+
+    @classmethod
+    def _offset_ownership_path(cls, path, distance):
+        points = tuple((float(p.x_mm), float(p.y_mm)) for p in path.points)
+        normals = []
+        for first, second in zip(points, points[1:]):
+            dx, dy = second[0] - first[0], second[1] - first[1]
+            length = math.hypot(dx, dy)
+            if length <= 1.0e-9:
+                raise SplitOperationError("Region seam contains a zero-length segment.")
+            tx, ty = dx / length, dy / length
+            normals.append(
+                (ty, -tx) if path.axis == "vertical" else (-ty, tx)
+            )
+        shifted = []
+        for index, point in enumerate(points):
+            if index == 0:
+                nx, ny = normals[0]
+                scale = distance
+            elif index == len(points) - 1:
+                nx, ny = normals[-1]
+                scale = distance
+            else:
+                nx = normals[index - 1][0] + normals[index][0]
+                ny = normals[index - 1][1] + normals[index][1]
+                length = math.hypot(nx, ny)
+                if length <= 1.0e-9:
+                    nx, ny = normals[index]
+                    scale = distance
+                else:
+                    nx, ny = nx / length, ny / length
+                    projection = nx * normals[index][0] + ny * normals[index][1]
+                    scale = distance / max(projection, 0.5)
+            shifted.append((point[0] + nx * scale, point[1] + ny * scale))
+        return cls._remove_xy_loops(tuple(shifted))
+
+    @classmethod
+    def _remove_xy_loops(cls, points):
+        """Collapse only tiny loops introduced by ownership-line offsetting."""
+        result = list(cls._compact_xy_path(points))
+        while True:
+            crossing = None
+            for first in range(len(result) - 1):
+                for second in range(first + 2, len(result) - 1):
+                    point = cls._xy_segment_intersection(
+                        result[first], result[first + 1],
+                        result[second], result[second + 1],
+                    )
+                    if point is not None:
+                        crossing = (first, second, point)
+                        break
+                if crossing is not None:
+                    break
+            if crossing is None:
+                return tuple(result)
+            first, second, point = crossing
+            result = result[:first + 1] + [point] + result[second + 1:]
+
+    @classmethod
+    def _split_region_paths(cls, vertical, horizontal):
+        matches = []
+        for vertical_index, (a, b) in enumerate(zip(vertical, vertical[1:])):
+            for horizontal_index, (c, d) in enumerate(zip(horizontal, horizontal[1:])):
+                point = cls._xy_segment_intersection(a, b, c, d)
+                if point is not None and not any(
+                    math.hypot(point[0] - old[0], point[1] - old[1]) <= 1.0e-7
+                    for old, _i, _j in matches
+                ):
+                    matches.append((point, vertical_index, horizontal_index))
+        if len(matches) != 1:
+            raise SplitOperationError(
+                f"Region seams must intersect once; found {len(matches)}."
+            )
+        point, vertical_index, horizontal_index = matches[0]
+        vertical_low = vertical[:vertical_index + 1] + (point,)
+        vertical_high = (point,) + vertical[vertical_index + 1:]
+        horizontal_left = horizontal[:horizontal_index + 1] + (point,)
+        horizontal_right = (point,) + horizontal[horizontal_index + 1:]
+        return tuple(map(cls._compact_xy_path, (
+            vertical_low, vertical_high, horizontal_left, horizontal_right
+        )))
+
+    @staticmethod
+    def _xy_segment_intersection(a, b, c, d):
+        rx, ry = b[0] - a[0], b[1] - a[1]
+        sx, sy = d[0] - c[0], d[1] - c[1]
+        denominator = rx * sy - ry * sx
+        if abs(denominator) <= 1.0e-9:
+            return None
+        qx, qy = c[0] - a[0], c[1] - a[1]
+        t = (qx * sy - qy * sx) / denominator
+        u = (qx * ry - qy * rx) / denominator
+        if -1.0e-9 <= t <= 1.0 + 1.0e-9 and -1.0e-9 <= u <= 1.0 + 1.0e-9:
+            return (a[0] + t * rx, a[1] + t * ry)
+        return None
+
+    @staticmethod
+    def _compact_xy_path(points):
+        result = []
+        for point in points:
+            value = (float(point[0]), float(point[1]))
+            if not result or math.hypot(
+                value[0] - result[-1][0], value[1] - result[-1][1]
+            ) > 1.0e-7:
+                result.append(value)
+        return tuple(result)
+
+    @classmethod
+    def _compact_xy_polygon(cls, points):
+        compact = cls._compact_xy_path(points)
+        if len(compact) > 1 and math.hypot(
+            compact[0][0] - compact[-1][0],
+            compact[0][1] - compact[-1][1],
+        ) <= 1.0e-7:
+            compact = compact[:-1]
+        return compact
+
+    @classmethod
+    def _xy_self_intersects(cls, points):
+        edges = tuple(zip(points, points[1:] + points[:1]))
+        for first, edge_a in enumerate(edges):
+            for second in range(first + 1, len(edges)):
+                if second in (first, first + 1) or (
+                    first == 0 and second == len(edges) - 1
+                ):
+                    continue
+                if cls._xy_segment_intersection(
+                    edge_a[0], edge_a[1], edges[second][0], edges[second][1]
+                ) is not None:
+                    return True
+        return False
 
     @classmethod
     def _segmented_path_cutter(
