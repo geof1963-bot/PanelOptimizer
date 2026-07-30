@@ -389,6 +389,32 @@ class PanelOptimizerSplitPanelCommand:
                     f"{secondary.nearest_seam}/"
                     f"{secondary.nearest_detour_id or secondary.nearest_segment_id}\n"
                 )
+            for diagnosis in macro_result.region_component_diagnostics:
+                FreeCAD.Console.PrintMessage(
+                    f"Region_{diagnosis.region_index} extraction: "
+                    f"{len(diagnosis.components)} solids\n"
+                )
+                for component in diagnosis.components:
+                    action = (
+                        "ignored" if not component.is_structural else "retained"
+                    )
+                    FreeCAD.Console.PrintMessage(
+                        f"  Component {component.rank}: "
+                        f"{component.classification}; volume = "
+                        f"{component.volume_mm3:.6f} mm^3; bbox = "
+                        f"{component.bounds_mm}; footprint = "
+                        f"{component.footprint_mm2:.6f} mm^2; thickness = "
+                        f"{component.thickness_mm:.6f} mm; volume ratio = "
+                        f"{component.volume_ratio:.8f}; seam distance = "
+                        f"{component.seam_distance_mm:.6f} mm; opening "
+                        f"distance = {component.opening_distance_mm:.6f} mm; "
+                        f"touches exterior = "
+                        f"{component.touches_panel_exterior}; action = {action}\n"
+                    )
+                FreeCAD.Console.PrintMessage(
+                    f"Region_{diagnosis.region_index} structural "
+                    "connectivity: OK\n"
+                )
             FreeCAD.Console.PrintMessage(
                 "[1] Seam guides found\n"
                 f"Vertical features: {len(macro_result.seam_plan.vertical.followed_feature_ids)}\n"

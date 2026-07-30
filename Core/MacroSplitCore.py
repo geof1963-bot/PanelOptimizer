@@ -66,6 +66,7 @@ class MacroSplitResult:
     region_discarded_sliver_counts: tuple[int, ...] = ()
     connectivity_repair_attempts: int = 0
     connectivity_diagnostics: tuple[object, ...] = ()
+    region_component_diagnostics: tuple[object, ...] = ()
 
 
 class MacroSplitCore:
@@ -361,6 +362,7 @@ class MacroSplitCore:
             final_parts = []
             region_solid_counts = []
             discarded_sliver_counts = []
+            component_diagnostics = []
             sliver_limit = (
                 profile.bottom_width_mm
                 * profile.top_width_mm
@@ -369,12 +371,47 @@ class MacroSplitCore:
             for index, tool in enumerate(region_tools, start=1):
                 owned = panel_shape.common(tool)
                 owned_solids = tuple(owned.Solids)
+                ownership_discarded = 0
                 if len(owned_solids) != 1:
-                    raise RegionConnectivityError(
-                        diagnose_region_connectivity(
-                            index, owned_solids, seam_plan
-                        )
+                    diagnosis = diagnose_region_connectivity(
+                        index,
+                        owned_solids,
+                        seam_plan,
+                        (xmin, ymin, zmin, xmax, ymax, zmax),
+                        zmax - zmin,
                     )
+                    component_diagnostics.append(diagnosis)
+                    structural = diagnosis.structural_components
+                    if len(structural) != 1:
+                        structural_ranks = {
+                            item.rank for item in structural
+                        }
+                        structural_solids = tuple(
+                            solid for rank, solid in enumerate(
+                                sorted(
+                                    owned_solids,
+                                    key=lambda item: float(item.Volume),
+                                    reverse=True,
+                                ),
+                                start=1,
+                            )
+                            if rank in structural_ranks
+                        )
+                        raise RegionConnectivityError(
+                            diagnose_region_connectivity(
+                                index,
+                                structural_solids,
+                                seam_plan,
+                                (xmin, ymin, zmin, xmax, ymax, zmax),
+                                zmax - zmin,
+                            )
+                        )
+                    owned = sorted(
+                        owned_solids,
+                        key=lambda item: float(item.Volume),
+                        reverse=True,
+                    )[structural[0].rank - 1]
+                    ownership_discarded = len(diagnosis.ignored_slivers)
                 surface_part = owned.cut(surface_vertical).cut(surface_horizontal)
                 final_part = owned.cut(full_vertical).cut(full_horizontal)
                 try:
@@ -403,7 +440,7 @@ class MacroSplitCore:
                         f"{len(raw_solids)} solids."
                     )
                 region_solid_counts.append(1)
-                discarded_sliver_counts.append(discarded)
+                discarded_sliver_counts.append(discarded + ownership_discarded)
                 surface_parts.append(surface_part.Solids[0])
                 final_parts.append(final_solid)
             surface_result = Part.makeCompound(tuple(surface_parts))
@@ -435,6 +472,7 @@ class MacroSplitCore:
             region_areas_mm2=tuple(region_areas),
             region_solid_counts=tuple(region_solid_counts),
             region_discarded_sliver_counts=tuple(discarded_sliver_counts),
+            region_component_diagnostics=tuple(component_diagnostics),
         )
 
     @classmethod

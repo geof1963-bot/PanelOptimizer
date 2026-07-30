@@ -16,6 +16,7 @@ except ImportError:  # pragma: no cover
 
 from Commands.SplitPanelCommand import _progressive_four_part_split
 from Core.DowelPlanner import DowelPlanner
+from Core.ConnectivityRepair import diagnose_region_connectivity
 from Core.Exceptions import RegionConnectivityError
 from Core.LipBuilder import LipBuilder
 from Core.MacroPartExtractor import MacroPartExtractor
@@ -141,6 +142,116 @@ class ConnectivityRegionRepairTests(unittest.TestCase):
         self.assertEqual(source.exportBrepToString(), before)
         self.assertLessEqual(repair_elapsed, 20.0)
         self.assertLess(time.perf_counter() - started, 60.0)
+
+    @staticmethod
+    def _classify_secondary(secondary, panel_bounds=None):
+        """Return classification evidence beside a 426,956 mm^3 main body."""
+        main = Part.makeBox(267.0, 199.979775, 8.0, Vector(20.0, 100.0, 0.0))
+        finder = SinuousSeamPathFinder()
+        plan = finder.topology_shortlist(
+            finder.generate(Part.makeBox(594.0, 594.0, 8.0)),
+            (0.0, 594.0, 0.0, 594.0),
+        )[0]
+        diagnosis = diagnose_region_connectivity(
+            1,
+            (main, secondary),
+            plan,
+            panel_bounds or (0.0, 0.0, 0.0, 594.0, 594.0, 8.0),
+            8.0,
+        )
+        return diagnosis.secondary
+
+    def test_tiny_shallow_sliver_is_non_structural(self):
+        sliver = Part.makeBox(
+            3.0, 4.378457, 1.4, Vector(295.5, 80.0, 0.0)
+        )
+        evidence = self._classify_secondary(sliver)
+        self.assertAlmostEqual(evidence.volume_mm3, 18.3895194, places=5)
+        self.assertEqual(evidence.classification, "NON_STRUCTURAL_SLIVER")
+        self.assertLess(evidence.volume_ratio, 0.0002)
+        self.assertFalse(evidence.spans_substantial_thickness)
+
+    def test_meaningful_1922_mm3_is_structural(self):
+        island = Part.makeBox(15.5, 15.5, 8.0, Vector(289.0, 80.0, 0.0))
+        evidence = self._classify_secondary(island)
+        self.assertAlmostEqual(evidence.volume_mm3, 1922.0, places=5)
+        self.assertEqual(evidence.classification, "STRUCTURAL")
+
+    def test_small_volume_alone_is_insufficient(self):
+        full_thickness = Part.makeBox(
+            1.0, 2.0, 8.0, Vector(296.5, 80.0, 0.0)
+        )
+        evidence = self._classify_secondary(full_thickness)
+        self.assertLess(evidence.volume_mm3, 50.0)
+        self.assertEqual(evidence.classification, "STRUCTURAL")
+
+    def test_shallow_thickness_alone_is_insufficient(self):
+        wide = Part.makeBox(20.0, 20.0, 1.0, Vector(287.0, 80.0, 0.0))
+        evidence = self._classify_secondary(wide)
+        self.assertFalse(evidence.spans_substantial_thickness)
+        self.assertEqual(evidence.classification, "STRUCTURAL")
+
+    def test_exterior_component_is_never_discarded(self):
+        exterior = Part.makeBox(
+            3.0, 4.0, 1.4, Vector(0.0, 80.0, 0.0)
+        )
+        evidence = self._classify_secondary(exterior)
+        self.assertTrue(evidence.touches_panel_exterior)
+        self.assertEqual(evidence.classification, "STRUCTURAL")
+
+    def test_sliver_only_region_does_not_trigger_connectivity_repair(self):
+        panel = Part.makeBox(594.0, 594.0, 8.0)
+        main = panel.cut(
+            Part.makeBox(6.0, 8.0, 8.0, Vector(292.0, 78.0, 0.0))
+        )
+        sliver = Part.makeBox(
+            3.0, 4.378457, 1.4, Vector(293.5, 80.0, 0.0)
+        )
+        source = Part.makeCompound((main, sliver))
+        before = source.exportBrepToString()
+        finder = SinuousSeamPathFinder()
+        plan = finder.topology_shortlist(
+            finder.generate(panel), (0.0, 594.0, 0.0, 594.0)
+        )[0]
+        result = _progressive_four_part_split(
+            finder,
+            (plan,),
+            (0.0, 594.0, 0.0, 594.0),
+            lambda candidate: MacroSplitCore().cut_regions(
+                source, seam_plan=candidate
+            ),
+        )[0]
+        self.assertIsNotNone(result)
+        self.assertEqual(result.connectivity_repair_attempts, 0)
+        self.assertEqual(result.seam_plan, plan)
+        self.assertEqual(result.region_solid_counts, (1, 1, 1, 1))
+        self.assertEqual(result.solid_count, 4)
+        self.assertEqual(sum(result.region_discarded_sliver_counts), 1)
+        observations = tuple(
+            item
+            for diagnosis in result.region_component_diagnostics
+            for item in diagnosis.components
+        )
+        ignored = tuple(
+            item for item in observations
+            if item.classification == "NON_STRUCTURAL_SLIVER"
+        )
+        self.assertEqual(len(ignored), 1)
+        self.assertAlmostEqual(ignored[0].volume_mm3, 18.3895194, places=5)
+        meshes = build_macro_mesh_parts(result)
+        self.assertTrue(all(item.after.is_solid for item in meshes))
+        self.assertTrue(all(item.after.open_edge_count == 0 for item in meshes))
+        self.assertTrue(all(
+            item.after.non_manifold_edge_count == 0 for item in meshes
+        ))
+        self.assertTrue(all(
+            item.after.connected_component_count == 1 for item in meshes
+        ))
+        with tempfile.TemporaryDirectory() as directory:
+            artifacts = export_mesh_parts(meshes, directory)
+        self.assertEqual(len(artifacts), 4)
+        self.assertTrue(all(item.reopened.is_solid for item in artifacts))
+        self.assertEqual(source.exportBrepToString(), before)
 
 
 if __name__ == "__main__":

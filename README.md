@@ -123,6 +123,19 @@ before dowels, lips, mesh repair, or STL export can run. Search is limited to
 eight exact repair attempts and 20 seconds; disconnected material is never
 fused or bridged.
 
+## V4.74B non-structural B-rep slivers
+
+Before V4.74A repair is considered, every secondary ownership solid is now
+classified independently. A component is ignored only when absolute volume,
+volume ratio, Z-thickness ratio, and XY footprint are all below conservative
+configured limits, it lies close to a seam or artistic boundary, and it does
+not touch the panel exterior. Any substantial or silhouette-relevant signal
+keeps the component structural and sends it through the unchanged local
+connectivity-repair path. Confirmed slivers are neither fused nor bridged;
+they are omitted from the printable region and recorded in extraction
+diagnostics. The existing watertight, single-component mesh and reopened-STL
+checks remain the final authority for all four parts.
+
 ---
 
 # Printing Constraints

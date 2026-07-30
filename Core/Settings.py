@@ -107,6 +107,15 @@ class SplitSettings:
     MAX_CONNECTIVITY_REPAIR_TIME_S: float = 20.0
     CONNECTIVITY_REPAIR_WINDOW_MM: float = 40.0
 
+    # V4.74B conservative ownership-fragment classification.  Every scalar
+    # limit must pass together; none of these values is sufficient alone.
+    MAX_SLIVER_VOLUME_MM3: float = 50.0
+    MAX_SLIVER_VOLUME_RATIO: float = 0.0002
+    MAX_SLIVER_THICKNESS_RATIO: float = 0.30
+    MAX_SLIVER_FOOTPRINT_MM2: float = 100.0
+    MAX_SLIVER_BOUNDARY_DISTANCE_MM: float = 2.5
+    PANEL_EXTERIOR_TOLERANCE_MM: float = 0.05
+
 
 @dataclass(frozen=True)
 class AnalyzerSettings:

@@ -11,9 +11,12 @@ from __future__ import annotations
 import math
 from dataclasses import dataclass, replace
 
+from .Settings import Settings
+
 __all__ = [
     "ComponentConnectivityObservation",
     "RegionConnectivityDiagnosis",
+    "classify_region_components",
     "diagnose_region_connectivity",
 ]
 
@@ -32,6 +35,17 @@ class ComponentConnectivityObservation:
     nearest_detour_id: str | None
     seam_distance_mm: float
     opening_distance_mm: float
+    footprint_mm2: float
+    thickness_mm: float
+    volume_ratio: float
+    touches_panel_exterior: bool
+    spans_substantial_thickness: bool
+    classification: str
+
+    @property
+    def is_structural(self) -> bool:
+        """Return whether this component must remain printable material."""
+        return self.classification == "STRUCTURAL"
 
 
 @dataclass(frozen=True, slots=True)
@@ -42,6 +56,16 @@ class RegionConnectivityDiagnosis:
     components: tuple[ComponentConnectivityObservation, ...]
     repair_attempts: int = 0
     rejection_reason: str = "no local connected alternative was accepted"
+
+    @property
+    def structural_components(self):
+        """Return components which still require physical connectivity."""
+        return tuple(item for item in self.components if item.is_structural)
+
+    @property
+    def ignored_slivers(self):
+        """Return independently confirmed non-structural fragments."""
+        return tuple(item for item in self.components if not item.is_structural)
 
     @property
     def secondary(self) -> ComponentConnectivityObservation:
@@ -69,7 +93,11 @@ class RegionConnectivityDiagnosis:
                 f"{component.nearest_seam}/{component.nearest_segment_id}; "
                 f"nearest detour "
                 f"{component.nearest_detour_id or 'none'}; opening distance "
-                f"{component.opening_distance_mm:.6f} mm"
+                f"{component.opening_distance_mm:.6f} mm; footprint "
+                f"{component.footprint_mm2:.6f} mm^2; thickness "
+                f"{component.thickness_mm:.6f} mm; volume ratio "
+                f"{component.volume_ratio:.8f}; classification "
+                f"{component.classification}"
             )
         return (
             f"Region_{self.region_index} disconnected\n"
@@ -87,13 +115,20 @@ class RegionConnectivityDiagnosis:
         )
 
 
-def diagnose_region_connectivity(region_index, solids, seam_plan):
+def diagnose_region_connectivity(
+    region_index, solids, seam_plan, panel_bounds=None, panel_thickness_mm=None
+):
     """Describe disconnected solids and map each to the nearest seam section."""
     ordered = tuple(sorted(solids, key=lambda item: float(item.Volume), reverse=True))
     if len(ordered) < 2:
         raise ValueError("Connectivity diagnosis requires multiple solids.")
     features = {feature.feature_id: feature for feature in seam_plan.features}
     observations = []
+    main_volume = float(ordered[0].Volume)
+    if panel_bounds is None:
+        panel_bounds = _combined_bounds(ordered)
+    if panel_thickness_mm is None:
+        panel_thickness_mm = panel_bounds[5] - panel_bounds[2]
     for rank, solid in enumerate(ordered, start=1):
         center = solid.CenterOfMass
         centroid = (float(center.x), float(center.y), float(center.z))
@@ -102,6 +137,10 @@ def diagnose_region_connectivity(region_index, solids, seam_plan):
             float(bounds.XMin), float(bounds.YMin), float(bounds.ZMin),
             float(bounds.XMax), float(bounds.YMax), float(bounds.ZMax),
         )
+        footprint = max(0.0, bounds_mm[3] - bounds_mm[0]) * max(
+            0.0, bounds_mm[4] - bounds_mm[1]
+        )
+        thickness = max(0.0, bounds_mm[5] - bounds_mm[2])
         seam, segment_index, seam_distance = _nearest_seam_segment(
             centroid[:2], seam_plan
         )
@@ -123,8 +162,83 @@ def diagnose_region_connectivity(region_index, solids, seam_plan):
             nearest_detour_id=detour_id,
             seam_distance_mm=seam_distance,
             opening_distance_mm=opening_distance,
+            footprint_mm2=footprint,
+            thickness_mm=thickness,
+            volume_ratio=float(solid.Volume) / main_volume,
+            touches_panel_exterior=_touches_panel_exterior(
+                bounds_mm, panel_bounds
+            ),
+            spans_substantial_thickness=(
+                thickness / max(panel_thickness_mm, 1.0e-12)
+                > Settings.Split.MAX_SLIVER_THICKNESS_RATIO
+            ),
+            classification="STRUCTURAL",
         ))
-    return RegionConnectivityDiagnosis(int(region_index), tuple(observations))
+    return classify_region_components(
+        RegionConnectivityDiagnosis(int(region_index), tuple(observations)),
+        panel_thickness_mm,
+    )
+
+
+def classify_region_components(diagnosis, panel_thickness_mm):
+    """Classify secondary solids using combined conservative evidence.
+
+    A fragment is ignored only when it is small in absolute and relative
+    volume, shallow, small in XY, close to a seam or artistic boundary, and
+    does not touch the source panel exterior.  The main component is always
+    structural.
+    """
+    classified = []
+    for component in diagnosis.components:
+        near_boundary = min(
+            component.seam_distance_mm, component.opening_distance_mm
+        ) <= Settings.Split.MAX_SLIVER_BOUNDARY_DISTANCE_MM
+        thickness_ratio = component.thickness_mm / max(
+            float(panel_thickness_mm), 1.0e-12
+        )
+        is_sliver = (
+            component.rank > 1
+            and component.volume_mm3 <= Settings.Split.MAX_SLIVER_VOLUME_MM3
+            and component.volume_ratio <= Settings.Split.MAX_SLIVER_VOLUME_RATIO
+            and thickness_ratio <= Settings.Split.MAX_SLIVER_THICKNESS_RATIO
+            and component.footprint_mm2 <= Settings.Split.MAX_SLIVER_FOOTPRINT_MM2
+            and near_boundary
+            and not component.touches_panel_exterior
+        )
+        classified.append(replace(
+            component,
+            spans_substantial_thickness=(
+                thickness_ratio > Settings.Split.MAX_SLIVER_THICKNESS_RATIO
+            ),
+            classification=(
+                "NON_STRUCTURAL_SLIVER" if is_sliver else "STRUCTURAL"
+            ),
+        ))
+    return replace(diagnosis, components=tuple(classified))
+
+
+def _combined_bounds(solids):
+    return (
+        min(float(item.BoundBox.XMin) for item in solids),
+        min(float(item.BoundBox.YMin) for item in solids),
+        min(float(item.BoundBox.ZMin) for item in solids),
+        max(float(item.BoundBox.XMax) for item in solids),
+        max(float(item.BoundBox.YMax) for item in solids),
+        max(float(item.BoundBox.ZMax) for item in solids),
+    )
+
+
+def _touches_panel_exterior(bounds, panel_bounds):
+    tolerance = Settings.Split.PANEL_EXTERIOR_TOLERANCE_MM
+    return any(
+        abs(value - exterior) <= tolerance
+        for value, exterior in (
+            (bounds[0], panel_bounds[0]),
+            (bounds[1], panel_bounds[1]),
+            (bounds[3], panel_bounds[3]),
+            (bounds[4], panel_bounds[4]),
+        )
+    )
 
 
 def _nearest_seam_segment(point, seam_plan):
