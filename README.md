@@ -161,7 +161,7 @@ evidence instead of the former immediate extraction error. Historical reserve
 routes and raw `solid_count == 4` acceptance are no longer used. Dowels, lips,
 mesh generation, and STL export begin only after all four region connectivity
 counts are exactly one. Normal command output starts with
-`PanelOptimizer Split Pipeline V5.02` and reports raw/sliver/structural counts
+`PanelOptimizer Split Pipeline V5.10` and reports raw/sliver/structural counts
 for every final region.
 
 Structural-fragment classification uses the effective material footprint
@@ -269,7 +269,7 @@ Automatic STL generation.
 
 # Current Version
 
-**V5.02**
+**V5.10**
 
 Status:
 
@@ -279,6 +279,8 @@ Status:
 - Watertight transactional four-file STL export and reopen validation
 - Curved vertical exit transitions remove long straight visual bridges; route,
   split, and lip stages retain detailed production diagnostics.
+- Execution-local OCC reuse consolidates surface extraction and shared lip
+  candidate clipping without persistent caches or geometry-policy changes.
 
 ---
 

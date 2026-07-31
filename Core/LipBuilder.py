@@ -101,6 +101,21 @@ class LipBuilder:
         except Exception as error:
             raise LipBuildError("Unable to construct seam-offset lip solids.") from error
 
+        # The exclusion box is shared by all four part masks. Cut it from
+        # each batched rib once, then reuse those exact transient shapes for
+        # the four material-side commons below.
+        prepared_candidates = []
+        for candidate, ideal_volume in candidates:
+            try:
+                with operation(
+                    "[7] Lips", "shared", "prepare clipped candidate", candidate
+                ):
+                    prepared = candidate.cut(exclusion)
+            except Exception as error:
+                raise LipBuildError("Shared lip candidate preparation failed.") from error
+            prepared_candidates.append((prepared, ideal_volume))
+        prepared_candidates = tuple(prepared_candidates)
+
         fused_parts = []
         preview_pieces = []
         reports = []
@@ -111,7 +126,7 @@ class LipBuilder:
             mask = self._top_material_mask(solid, zmax, Part, Vector)
             pieces = []
             trimmed = rejected = 0
-            for candidate, ideal_volume in candidates:
+            for candidate, ideal_volume in prepared_candidates:
                 if not self._bbox_overlaps_xy(candidate.BoundBox, before_box):
                     rejected += 1
                     continue
@@ -119,7 +134,7 @@ class LipBuilder:
                     with operation(
                         "[7] Lips", name, "clip candidate", candidate
                     ):
-                        clipped = candidate.cut(exclusion).common(mask)
+                        clipped = candidate.common(mask)
                     actual_volume = float(clipped.Volume)
                 except Exception as error:
                     raise LipBuildError(f"Local lip clipping failed for {name}.") from error

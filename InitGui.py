@@ -67,7 +67,7 @@ class PanelOptimizerWorkbench(Workbench):
         FreeCAD.Console.PrintMessage(
             "\n"
             "=========================================\n"
-            " PanelOptimizer Workbench V5.02 loaded\n"
+            " PanelOptimizer Workbench V5.10 loaded\n"
             "=========================================\n"
         )
 

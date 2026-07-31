@@ -410,13 +410,13 @@ class PanelOptimizerSplitPanelCommand:
             return False
 
     def Activated(self):
-        """Run the instrumented V5.02 Split Panel production pipeline."""
+        """Run the instrumented V5.10 Split Panel production pipeline."""
         if self._running:
             self._error("PanelOptimizer: Split Panel already running.")
             return
         self._running = True
         self._last_run_evidence = None
-        start_run("PanelOptimizer Split Panel V5.02")
+        start_run("PanelOptimizer Split Panel V5.10")
         document = FreeCAD.ActiveDocument
         if document is None:
             self._error("PanelOptimizer: no active document.")
@@ -425,7 +425,7 @@ class PanelOptimizerSplitPanelCommand:
             return
 
         FreeCAD.Console.PrintMessage(
-            "PanelOptimizer Split Pipeline V5.02\n"
+            "PanelOptimizer Split Pipeline V5.10\n"
         )
 
         timings = {}
@@ -1053,9 +1053,9 @@ class PanelOptimizerSplitPanelCommand:
 
     @staticmethod
     def _print_performance(timings) -> None:
-        """Print one concise V5.02 stage report in seconds."""
+        """Print one concise V5.10 stage report in seconds."""
         FreeCAD.Console.PrintMessage(
-            "PanelOptimizer Performance V5.02\n"
+            "PanelOptimizer Performance V5.10\n"
             f"Contour prep + route search: {timings.get('seams', 0.0):.3f} s\n"
             f"  contour extraction: {timings.get('contour_prep_seconds', 0.0):.3f} s\n"
             f"  route generation: {timings.get('route_search_seconds', 0.0):.3f} s\n"

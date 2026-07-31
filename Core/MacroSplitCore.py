@@ -361,7 +361,25 @@ class MacroSplitCore:
                 seam_plan.horizontal, profile, zmax, z_bottom, below_panel,
                 True, Part, Vector,
             )
-            surface_parts = []
+            # Surface-groove geometry is reporting metadata only. Build the
+            # exact source-level result once instead of repeating the same two
+            # surface cuts for every ownership region. The production parts
+            # below still use the unchanged region ownership and full-depth
+            # cutters.
+            with operation(
+                "[4] Extract structural parts",
+                "surface result",
+                "surface vertical groove cut",
+                panel_shape,
+            ):
+                surface_result = panel_shape.cut(surface_vertical)
+            with operation(
+                "[4] Extract structural parts",
+                "surface result",
+                "surface horizontal groove cut",
+                surface_result,
+            ):
+                surface_result = surface_result.cut(surface_horizontal)
             final_parts = []
             region_solid_counts = []
             region_raw_solid_counts = []
@@ -402,21 +420,11 @@ class MacroSplitCore:
                 with operation(
                     "[4] Extract structural parts",
                     f"Region_{index}",
-                    "surface groove cuts",
-                    owned,
-                ):
-                    surface_part = owned.cut(surface_vertical).cut(
-                        surface_horizontal
-                    )
-                with operation(
-                    "[4] Extract structural parts",
-                    f"Region_{index}",
                     "full-depth seam cuts",
                     owned,
                 ):
                     final_part = owned.cut(full_vertical).cut(full_horizontal)
                 try:
-                    surface_part = surface_part.removeSplitter()
                     final_part = final_part.removeSplitter()
                 except Exception as error:
                     log_event(
@@ -454,9 +462,7 @@ class MacroSplitCore:
                     len(raw_solids) + ownership_discarded
                 )
                 discarded_sliver_counts.append(discarded + ownership_discarded)
-                surface_parts.append(surface_part.Solids[0])
                 final_parts.append(final_solid)
-            surface_result = Part.makeCompound(tuple(surface_parts))
             result = Part.makeCompound(tuple(final_parts))
         except SplitOperationError:
             raise
