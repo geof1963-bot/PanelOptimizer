@@ -11,6 +11,8 @@ lose material.  No FreeCAD object is stored in the immutable plan records.
 from __future__ import annotations
 
 import math
+import time
+from bisect import bisect_left
 from itertools import combinations
 from dataclasses import dataclass, replace
 
@@ -156,6 +158,7 @@ class _Candidate:
     target_distance_mm: float
     nearest_opening_clearance_mm: float = math.inf
     surrounding_material_mm: float = 0.0
+    local_material_score: float = 1.0
 
 
 class DowelPlanner:
@@ -164,11 +167,36 @@ class DowelPlanner:
     def __init__(self, parameters: DowelParameters = DowelParameters()) -> None:
         self._parameters = self._validate_parameters(parameters)
         self._validated_cutters = {}
+        self._inside_cache = {}
+        self._exact_candidate_cache = {}
+        self._feature_polygon_cache = {}
+        self._branch_frame_cache = {}
+        self._active_intersection = None
+        self._solid_bounds = ()
+        self._solid_centers = ()
 
     def plan(self, macro_result: MacroSplitResult) -> DowelPlan:
         """Return a safe deterministic plan without modifying any input shape."""
         self._validated_cutters = {}
+        self._inside_cache = {}
+        self._exact_candidate_cache = {}
+        self._feature_polygon_cache = {}
+        self._branch_frame_cache = {}
+        self._active_intersection = _seam_intersection(macro_result.seam_plan)
         solids, bounds = self._ordered_solids_and_bounds(macro_result)
+        solid_bounds = []
+        solid_centers = []
+        for solid in solids:
+            box = solid.BoundBox
+            center = solid.CenterOfMass
+            solid_bounds.append((
+                float(box.XMin), float(box.XMax),
+                float(box.YMin), float(box.YMax),
+                float(box.ZMin), float(box.ZMax),
+            ))
+            solid_centers.append((float(center.x), float(center.y)))
+        self._solid_bounds = tuple(solid_bounds)
+        self._solid_centers = tuple(solid_centers)
         branches = self._branches(macro_result)
         z_value = bounds[4] + self._parameters.axis_height_mm
         radius = self._parameters.hole_diameter_mm / 2.0
@@ -180,14 +208,16 @@ class DowelPlanner:
         branch_results = []
         occupied: list[tuple[float, float]] = []
         for branch in branches:
+            branch_started = time.perf_counter()
             length = _polyline_length(branch.points)
             usable_interval = self._usable_interval(
-                branch, bounds, _seam_intersection(macro_result.seam_plan)
+                branch, bounds, self._active_intersection
             )
             usable_length = usable_interval[1] - usable_interval[0]
             requested_targets = _even_fractions(
                 self._parameters.target_per_branch
             )
+            pool_started = time.perf_counter()
             candidates, rejections, sampled_count, sampling_interval = (
                 self._safe_candidate_pool(
                     usable_interval,
@@ -199,19 +229,53 @@ class DowelPlanner:
                     occupied,
                 )
             )
+            pool_seconds = time.perf_counter() - pool_started
             cheap_candidate_count = len(candidates)
+            selection_started = time.perf_counter()
+            shortlisted = self._candidate_shortlist(
+                candidates, usable_interval, limit=32
+            )
             (
                 chosen_candidates,
                 actual_targets,
                 exact_results,
                 exact_rejections,
             ) = self._validated_safe_subset(
-                candidates,
+                shortlisted,
                 usable_interval,
                 branch,
                 macro_result,
                 solids,
             )
+            selection_seconds = time.perf_counter() - selection_started
+            if (
+                len(chosen_candidates) < self._parameters.target_per_branch
+                and len(candidates) > len(shortlisted)
+            ):
+                recovery = self._full_branch_recovery_shortlist(
+                    candidates, usable_interval, limit=32
+                )
+                recovery_by_distance = {
+                    round(candidate.distance_mm, 9): candidate
+                    for candidate in (
+                        tuple(chosen_candidates) + tuple(recovery)
+                    )
+                }
+                recovery = tuple(sorted(
+                    recovery_by_distance.values(),
+                    key=lambda candidate: candidate.distance_mm,
+                ))
+                recovered = self._validated_safe_subset(
+                    recovery, usable_interval, branch, macro_result, solids
+                )
+                recovery_results = recovered[2]
+                recovery_rejections = recovered[3]
+                exact_results.update(recovery_results)
+                exact_rejections = (
+                    tuple(exact_rejections) + tuple(recovery_rejections)
+                )
+                if len(recovered[0]) > len(chosen_candidates):
+                    chosen_candidates, actual_targets = recovered[:2]
             rejections = tuple(rejections) + tuple(exact_rejections)
             used_fallback = (
                 self._parameters.target_per_branch >= 3
@@ -299,7 +363,7 @@ class DowelPlanner:
                     rejected_geometry_counts=_rejection_counts(rejections),
                     sampling_interval_mm=sampling_interval,
                     cheap_candidate_count=cheap_candidate_count,
-                    shortlisted_candidate_count=len(exact_results),
+                    shortlisted_candidate_count=len(shortlisted),
                     exact_validation_count=len(exact_results),
                     safe_interval_count=_safe_interval_count(
                         candidates, sampling_interval
@@ -324,7 +388,81 @@ class DowelPlanner:
                     degraded_two_dowel=len(branch_dowels) == 2,
                 )
             )
+            log_event(
+                "[6] Dowels",
+                branch.branch_id,
+                f"SUMMARY sampled={sampled_count} cheap={cheap_candidate_count} "
+                f"exact={len(exact_results)} selected={len(branch_dowels)} "
+                f"pool_seconds={pool_seconds:.6f} "
+                f"selection_seconds={selection_seconds:.6f} "
+                f"seconds={time.perf_counter() - branch_started:.6f} "
+                f"positions={tuple(item.center_xyz_mm for item in branch_dowels)} "
+                f"depths={tuple((item.useful_depth_part_a_mm, item.useful_depth_part_b_mm) for item in branch_dowels)}",
+            )
         return DowelPlan(tuple(accepted), tuple(branch_results))
+
+    def _candidate_shortlist(self, candidates, interval, limit):
+        """Keep a small deterministic pool around the four target positions."""
+        if len(candidates) <= limit:
+            return tuple(candidates)
+        start, end = interval
+        quality_floor = (
+            self._parameters.hole_diameter_mm / 2.0
+            + self._parameters.material_margin_mm
+        )
+        selected = {}
+        ideals = tuple(
+            start + (end - start) * fraction
+            for fraction in _even_fractions(self._parameters.target_per_branch)
+        )
+        per_target = max(1, limit // len(ideals))
+        for ideal in ideals:
+            ranked = sorted(
+                candidates,
+                key=lambda candidate: (
+                    abs(candidate.distance_mm - ideal)
+                    + 10.0 * max(
+                        0.0,
+                        quality_floor - candidate.nearest_opening_clearance_mm,
+                    ),
+                    -candidate.nearest_opening_clearance_mm,
+                    candidate.distance_mm,
+                ),
+            )
+            for candidate in ranked[:per_target]:
+                selected[round(candidate.distance_mm, 9)] = candidate
+        return tuple(sorted(
+            selected.values(), key=lambda candidate: candidate.distance_mm
+        ))[:limit]
+
+    def _full_branch_recovery_shortlist(self, candidates, interval, limit):
+        """Bound one underfilled recovery scan across the complete branch."""
+        if len(candidates) <= limit:
+            return tuple(candidates)
+        start, end = interval
+        bin_count = 8
+        width = max((end - start) / bin_count, _COORDINATE_TOLERANCE_MM)
+        buckets = [[] for _ in range(bin_count)]
+        for candidate in candidates:
+            index = min(
+                bin_count - 1,
+                max(0, int((candidate.distance_mm - start) / width)),
+            )
+            buckets[index].append(candidate)
+        selected = []
+        per_bin = max(1, limit // bin_count)
+        for bucket in buckets:
+            selected.extend(sorted(
+                bucket,
+                key=lambda candidate: (
+                    -candidate.nearest_opening_clearance_mm,
+                    -candidate.surrounding_material_mm,
+                    candidate.distance_mm,
+                ),
+            )[:per_bin])
+        return tuple(sorted(
+            selected, key=lambda candidate: candidate.distance_mm
+        ))[:limit]
 
     def _usable_interval(self, branch, bounds, intersection):
         """Measure the contiguous branch interval outside edge/center margins."""
@@ -333,7 +471,7 @@ class DowelPlanner:
         distances = tuple(length * index / sample_count for index in range(sample_count + 1))
 
         def eligible(distance):
-            point, _ = _point_and_tangent(branch.points, distance)
+            point, _ = self._branch_point_and_tangent(branch, distance)
             edge_clearance = min(
                 point[0] - bounds[0], bounds[1] - point[0],
                 point[1] - bounds[2], bounds[3] - point[1],
@@ -372,7 +510,7 @@ class DowelPlanner:
         rejections = []
 
         def evaluate(distance):
-            point, tangent = _point_and_tangent(branch.points, distance)
+            point, tangent = self._branch_point_and_tangent(branch, distance)
             center = (point[0], point[1], z_value)
             reason = self._cheap_candidate_reason(
                 macro_result,
@@ -409,15 +547,9 @@ class DowelPlanner:
                 center[0] + axis[0] * half,
                 center[1] + axis[1] * half,
             )
-            opening_clearance = min((
-                _segment_polyline_distance(
-                    first,
-                    second,
-                    tuple((point.x_mm, point.y_mm) for point in feature.points),
-                )
-                - self._parameters.hole_diameter_mm / 2.0
-                for feature in macro_result.seam_plan.features
-            ), default=math.inf)
+            opening_clearance = self._nearest_opening_clearance(
+                first, second, macro_result.seam_plan.features
+            )
             surrounding = min(
                 center[0] - bounds[0], bounds[1] - center[0],
                 center[1] - bounds[2], bounds[3] - center[1],
@@ -449,6 +581,44 @@ class DowelPlanner:
             sampling_interval,
         )
 
+    def _branch_point_and_tangent(self, branch, distance):
+        """Locate one arc-length frame in O(log n) on a cached polyline."""
+        frames = self._branch_frame_cache.get(branch.branch_id)
+        if frames is None:
+            built = []
+            consumed = 0.0
+            for first, second in zip(branch.points, branch.points[1:]):
+                length = math.hypot(
+                    second[0] - first[0], second[1] - first[1]
+                )
+                if length <= _COORDINATE_TOLERANCE_MM:
+                    continue
+                built.append((consumed + length, consumed, first, second, length))
+                consumed += length
+            if not built:
+                raise DowelPlanningError(
+                    f"Branch '{branch.branch_id}' has no measurable segment."
+                )
+            frames = (tuple(item[0] for item in built), tuple(built), consumed)
+            self._branch_frame_cache[branch.branch_id] = frames
+        ends, segments, total = frames
+        target = min(max(float(distance), 0.0), total)
+        index = min(
+            bisect_left(ends, target - _COORDINATE_TOLERANCE_MM),
+            len(segments) - 1,
+        )
+        _end, consumed, first, second, length = segments[index]
+        ratio = min(max((target - consumed) / length, 0.0), 1.0)
+        tangent = (
+            (second[0] - first[0]) / length,
+            (second[1] - first[1]) / length,
+        )
+        point = (
+            first[0] + ratio * (second[0] - first[0]),
+            first[1] + ratio * (second[1] - first[1]),
+        )
+        return point, tangent
+
     def _validated_safe_subset(
         self, candidates, interval, branch, macro_result, solids
     ):
@@ -466,17 +636,72 @@ class DowelPlanner:
             selected, targets = self._select_safe_subset(tuple(remaining), interval)
             if not selected:
                 break
+            # Expensive classifiers are restricted to the current winning
+            # layout. Low cylindrical occupancy is pruned only while a full
+            # four-candidate recovery remains possible.
+            low_material = []
+            for candidate in selected:
+                material_score = self._xy_material_score(
+                    macro_result,
+                    candidate.center_xyz_mm,
+                    _canonical_normal(
+                        candidate.tangent_xy, branch.branch_id
+                    ),
+                )
+                if material_score < 1.0 - _COORDINATE_TOLERANCE_MM:
+                    low_material.append((candidate, material_score))
+                    continue
+                if candidate.nearest_opening_clearance_mm >= (
+                    self._parameters.hole_diameter_mm / 2.0
+                    + self._parameters.material_margin_mm
+                ):
+                    continue
+                score = self._local_material_score(
+                    solids,
+                    branch,
+                    candidate.center_xyz_mm,
+                    _canonical_normal(candidate.tangent_xy, branch.branch_id),
+                )
+                if score < 1.0 - _COORDINATE_TOLERANCE_MM:
+                    low_material.append((candidate, score))
+            removable = [
+                candidate for candidate, _score in low_material
+                if len(remaining) - len(low_material) >= self._parameters.target_per_branch
+            ]
+            if removable:
+                removed_keys = {
+                    round(candidate.distance_mm, 9) for candidate in removable
+                }
+                remaining = [
+                    candidate for candidate in remaining
+                    if round(candidate.distance_mm, 9) not in removed_keys
+                ]
+                for candidate, score in low_material:
+                    if round(candidate.distance_mm, 9) in removed_keys:
+                        rejections.append(DowelRejection(
+                            branch.branch_id,
+                            candidate.target_fraction,
+                            candidate.center_xyz_mm,
+                            f"low cylindrical material score {score:.3f}",
+                            branch_distance_mm=candidate.distance_mm,
+                        ))
+                continue
             failed_distances = set()
             for candidate in selected:
                 key = round(candidate.distance_mm, 9)
                 if key not in exact_results:
-                    exact_results[key] = self._exact_candidate_reason(
-                        macro_result,
-                        solids,
-                        branch,
-                        candidate.center_xyz_mm,
-                        candidate.tangent_xy,
-                    )
+                    cache_key = (branch.branch_id, key)
+                    if cache_key not in self._exact_candidate_cache:
+                        self._exact_candidate_cache[cache_key] = (
+                            self._exact_candidate_reason(
+                                macro_result,
+                                solids,
+                                branch,
+                                candidate.center_xyz_mm,
+                                candidate.tangent_xy,
+                            )
+                        )
+                    exact_results[key] = self._exact_candidate_cache[cache_key]
                 reason, _cutter, _depths, _breakout = exact_results[key]
                 log_event(
                     "[6] Dowels",
@@ -558,6 +783,10 @@ class DowelPlanner:
     def _best_coverage_subset(self, candidates, count, minimum_spacing, interval):
         """Dynamic Pareto search over all cheap candidates, bounded by O(k*n^2)."""
         ordered = tuple(sorted(candidates, key=lambda item: item.distance_mm))
+        if len(ordered) <= 40 and count <= 4:
+            return self._exhaustive_coverage_subset(
+                ordered, count, minimum_spacing, interval
+            )
         ideals = tuple(
             interval[0] + (interval[1] - interval[0]) * fraction
             for fraction in _even_fractions(count)
@@ -574,6 +803,7 @@ class DowelPlanner:
                     min(candidate.surrounding_material_mm,
                         self._parameters.edge_margin_mm),
                 ),
+                candidate.local_material_score,
             )]
         for used in range(2, count + 1):
             for index, candidate in enumerate(ordered):
@@ -585,7 +815,7 @@ class DowelPlanner:
                     )
                     if spacing < minimum_spacing - _COORDINATE_TOLERANCE_MM:
                         continue
-                    for indices, largest, smallest, deviation, quality in states.get(
+                    for indices, largest, smallest, deviation, quality, material_score in states.get(
                         (used - 1, previous), ()
                     ):
                         options.append((
@@ -599,12 +829,16 @@ class DowelPlanner:
                                 min(candidate.surrounding_material_mm,
                                     self._parameters.edge_margin_mm),
                             ),
+                            min(material_score, candidate.local_material_score),
                         ))
                 states[(used, index)] = _pareto_layouts(options)
         finalists = []
         for index in range(len(ordered)):
             for state in states.get((count, index), ()):
-                indices, largest, smallest, deviation, minimum_local_quality = state
+                (
+                    indices, largest, smallest, deviation,
+                    minimum_local_quality, minimum_material_score,
+                ) = state
                 final_largest = max(largest, interval[1] - ordered[index].distance_mm)
                 quality_floor = (
                     self._parameters.hole_diameter_mm / 2.0
@@ -613,10 +847,13 @@ class DowelPlanner:
                 quality_penalty = max(
                     0.0, quality_floor - minimum_local_quality
                 )
+                material_penalty = 200.0 * max(
+                    0.0, 1.0 - minimum_material_score
+                )
                 signature = tuple(round(ordered[item].distance_mm, 9) for item in indices)
                 finalists.append((
                     (
-                        final_largest + quality_penalty,
+                        final_largest + quality_penalty + material_penalty,
                         -minimum_local_quality,
                         -smallest,
                         deviation,
@@ -625,6 +862,269 @@ class DowelPlanner:
                     tuple(ordered[item] for item in indices),
                 ))
         return min(finalists, key=lambda item: item[0])[1] if finalists else ()
+
+    def _xy_material_score(self, macro_result, center, axis):
+        """Score useful-depth probes against vectorized opening polygons."""
+
+        depth = self._parameters.minimum_useful_depth_per_side_mm
+        radius = self._parameters.hole_diameter_mm / 2.0
+        tangent = (-axis[1], axis[0])
+        scores = []
+        for sign in (-1.0, 1.0):
+            base = (
+                center[0] + sign * axis[0] * depth,
+                center[1] + sign * axis[1] * depth,
+            )
+            probes = (
+                base,
+                (base[0] + tangent[0] * radius, base[1] + tangent[1] * radius),
+                (base[0] - tangent[0] * radius, base[1] - tangent[1] * radius),
+            )
+            material = 0
+            for probe in probes:
+                inside_opening = any(
+                    feature.bounds_mm[0] <= probe[0] <= feature.bounds_mm[2]
+                    and feature.bounds_mm[1] <= probe[1] <= feature.bounds_mm[3]
+                    and self._point_in_feature(probe, feature)
+                    for feature in macro_result.seam_plan.features
+                )
+                material += not inside_opening
+            scores.append(material / len(probes))
+        return min(scores, default=0.0)
+
+    def _point_in_feature(self, probe, feature):
+        """Run the odd-even polygon rule with cached NumPy coordinate arrays."""
+        try:
+            import numpy
+        except ImportError:
+            from .SinuousSeamPath import Point2D, _point_in_polygon
+            return _point_in_polygon(Point2D(*probe), feature.points)
+        key = feature.feature_id
+        arrays = self._feature_polygon_cache.get(key)
+        if arrays is None:
+            x_values = numpy.asarray(
+                tuple(point.x_mm for point in feature.points), dtype=float
+            )
+            y_values = numpy.asarray(
+                tuple(point.y_mm for point in feature.points), dtype=float
+            )
+            arrays = (
+                x_values, y_values,
+                numpy.roll(x_values, 1), numpy.roll(y_values, 1),
+            )
+            self._feature_polygon_cache[key] = arrays
+        x_values, y_values, previous_x, previous_y = arrays
+        crosses = ((previous_y > probe[1]) != (y_values > probe[1]))
+        crossing_x = previous_x + (
+            (probe[1] - previous_y)
+            * (x_values - previous_x)
+            / numpy.where(y_values != previous_y, y_values - previous_y, 1.0)
+        )
+        return bool(numpy.count_nonzero(crosses & (probe[0] < crossing_x)) % 2)
+
+    def _nearest_opening_clearance(self, first, second, features):
+        """Return the cheap nearest 2D opening-box clearance for ranking."""
+        radius = self._parameters.hole_diameter_mm / 2.0
+        segment_bounds = (
+            min(first[0], second[0]), min(first[1], second[1]),
+            max(first[0], second[0]), max(first[1], second[1]),
+        )
+        return min(
+            (
+                _xy_bounds_distance(segment_bounds, feature.bounds_mm) - radius
+                for feature in features
+            ),
+            default=math.inf,
+        )
+
+    def _exhaustive_coverage_subset(
+        self, ordered, count, minimum_spacing, interval
+    ):
+        """Score a bounded shortlist with the exact policy and cached scalars."""
+        ideals = tuple(
+            interval[0] + (interval[1] - interval[0]) * fraction
+            for fraction in _even_fractions(count)
+        )
+        quality_floor = (
+            self._parameters.hole_diameter_mm / 2.0
+            + self._parameters.material_margin_mm
+        )
+        size = len(ordered)
+        adjacent_spacing = {}
+        for first in range(size):
+            first_center = ordered[first].center_xyz_mm
+            for second in range(first + 1, size):
+                second_center = ordered[second].center_xyz_mm
+                adjacent_spacing[first, second] = math.hypot(
+                    second_center[0] - first_center[0],
+                    second_center[1] - first_center[1],
+                )
+        qualities = tuple(
+            min(
+                candidate.nearest_opening_clearance_mm,
+                candidate.surrounding_material_mm,
+                self._parameters.edge_margin_mm,
+            )
+            for candidate in ordered
+        )
+        material_scores = tuple(
+            candidate.local_material_score for candidate in ordered
+        )
+        deviations = tuple(
+            tuple(
+                abs(candidate.distance_mm - ideals[position])
+                for position in range(count)
+            )
+            for candidate in ordered
+        )
+        try:
+            import numpy
+            index_rows = numpy.asarray(
+                tuple(combinations(range(size), count)), dtype=int
+            )
+            if index_rows.size:
+                centers = numpy.asarray(tuple(
+                    item.center_xyz_mm[:2] for item in ordered
+                ))
+                center_deltas = (
+                    centers[index_rows[:, 1:]]
+                    - centers[index_rows[:, :-1]]
+                )
+                spacing_rows = numpy.hypot(
+                    center_deltas[:, :, 0], center_deltas[:, :, 1]
+                )
+                smallest_rows = spacing_rows.min(axis=1)
+                valid = smallest_rows >= (
+                    minimum_spacing - _COORDINATE_TOLERANCE_MM
+                )
+                index_rows = index_rows[valid]
+                smallest_rows = smallest_rows[valid]
+                if len(index_rows):
+                    candidate_distances = numpy.asarray(tuple(
+                        item.distance_mm for item in ordered
+                    ))
+                    distance_rows = candidate_distances[index_rows]
+                    gap_rows = numpy.concatenate((
+                        (distance_rows[:, :1] - interval[0]),
+                        numpy.diff(distance_rows, axis=1),
+                        (interval[1] - distance_rows[:, -1:]),
+                    ), axis=1)
+                    minimum_quality_rows = numpy.asarray(qualities)[
+                        index_rows
+                    ].min(axis=1)
+                    minimum_material_rows = numpy.asarray(material_scores)[
+                        index_rows
+                    ].min(axis=1)
+                    primary = (
+                        gap_rows.max(axis=1)
+                        + numpy.maximum(0.0, quality_floor - minimum_quality_rows)
+                        + 200.0 * numpy.maximum(
+                            0.0, 1.0 - minimum_material_rows
+                        )
+                    )
+                    deviation_rows = numpy.asarray(deviations)[index_rows]
+                    deviation_rows = numpy.diagonal(
+                        deviation_rows, axis1=1, axis2=2
+                    ).sum(axis=1)
+                    signature = numpy.round(distance_rows, 9)
+                    keys = [
+                        signature[:, column]
+                        for column in range(count - 1, -1, -1)
+                    ] + [
+                        deviation_rows,
+                        -smallest_rows,
+                        -minimum_quality_rows,
+                        primary,
+                    ]
+                    best = index_rows[numpy.lexsort(tuple(keys))[0]]
+                    return tuple(ordered[int(index)] for index in best)
+        except ImportError:
+            pass
+        best_score = None
+        best_indices = None
+        for indices in combinations(range(size), count):
+            smallest = min(
+                adjacent_spacing[first, second]
+                for first, second in zip(indices, indices[1:])
+            )
+            if smallest < minimum_spacing - _COORDINATE_TOLERANCE_MM:
+                continue
+            largest_gap = max(
+                ordered[indices[0]].distance_mm - interval[0],
+                interval[1] - ordered[indices[-1]].distance_mm,
+                *(
+                    ordered[second].distance_mm
+                    - ordered[first].distance_mm
+                    for first, second in zip(indices, indices[1:])
+                ),
+            )
+            minimum_quality = min(qualities[index] for index in indices)
+            quality_penalty = max(0.0, quality_floor - minimum_quality)
+            minimum_material = min(material_scores[index] for index in indices)
+            material_penalty = 200.0 * max(0.0, 1.0 - minimum_material)
+            deviation = sum(
+                deviations[index][position]
+                for position, index in enumerate(indices)
+            )
+            signature = tuple(
+                round(ordered[index].distance_mm, 9) for index in indices
+            )
+            score = (
+                largest_gap + quality_penalty + material_penalty,
+                -minimum_quality,
+                -smallest,
+                deviation,
+                signature,
+            )
+            if best_score is None or score < best_score:
+                best_score = score
+                best_indices = indices
+        return (
+            tuple(ordered[index] for index in best_indices)
+            if best_indices is not None else ()
+        )
+
+    def _local_material_score(self, solids, branch, center, axis):
+        """Return a cached 0..1 cylindrical engagement score at useful depth."""
+        try:
+            from FreeCAD import Vector
+        except Exception:
+            return 0.0
+        depth = self._parameters.minimum_useful_depth_per_side_mm
+        scores = []
+        for index in branch.intended_indices:
+            if len(self._solid_centers) == len(solids):
+                part_center = self._solid_centers[index]
+            else:
+                part_center = (
+                    float(solids[index].CenterOfMass.x),
+                    float(solids[index].CenterOfMass.y),
+                )
+            projection = (
+                (part_center[0] - center[0]) * axis[0]
+                + (part_center[1] - center[1]) * axis[1]
+            )
+            sign = 1.0 if projection >= 0.0 else -1.0
+            probe = Vector(
+                center[0] + sign * axis[0] * depth,
+                center[1] + sign * axis[1] * depth,
+                center[2],
+            )
+            scores.append(float(self._is_inside(solids[index], index, probe)))
+        return min(scores, default=0.0)
+
+    def _is_inside(self, solid, index, probe):
+        key = (
+            index,
+            round(float(probe.x), 6),
+            round(float(probe.y), 6),
+            round(float(probe.z), 6),
+        )
+        if key not in self._inside_cache:
+            self._inside_cache[key] = bool(
+                solid.isInside(probe, _COORDINATE_TOLERANCE_MM, True)
+            )
+        return self._inside_cache[key]
 
     @staticmethod
     def _best_subset(candidates, count, minimum_spacing, interval, ideals):
@@ -655,7 +1155,7 @@ class DowelPlanner:
         return max(ranked, key=lambda item: item[0])[1] if ranked else ()
 
     def apply(self, macro_result: MacroSplitResult, plan: DowelPlan | None = None) -> DowelApplication:
-        """Subtract each planned cutter from exactly its two mating part copies."""
+        """Batch-subtract validated cutters once from each mating part copy."""
         import Part
 
         chosen = plan if plan is not None else self.plan(macro_result)
@@ -663,6 +1163,7 @@ class DowelPlanner:
         drilled = [solid.copy() for solid in solids]
         name_to_index = {f"Part_{index + 1}": index for index in range(4)}
         cutters = []
+        cutters_by_part = [[] for _ in range(4)]
         before = sum(float(solid.Volume) for solid in drilled)
         for dowel in chosen.dowels:
             cutter = self._validated_cutters.get(
@@ -673,22 +1174,26 @@ class DowelPlanner:
             cutters.append(cutter)
             for name in dowel.intended_part_names:
                 index = name_to_index[name]
-                try:
-                    with operation(
-                        "[6] Dowels",
-                        name,
-                        f"cut {dowel.dowel_id}",
-                        drilled[index],
-                    ):
-                        drilled[index] = drilled[index].cut(cutter)
-                except Exception as error:
-                    raise DowelPlanningError(
-                        f"Boolean drilling failed for {dowel.dowel_id} in {name}."
-                    ) from error
-                if not tuple(drilled[index].Solids) or float(drilled[index].Volume) <= 0.0:
-                    raise DowelPlanningError(
-                        f"{dowel.dowel_id} produced unusable geometry in {name}."
-                    )
+                cutters_by_part[index].append(cutter)
+        for index, part_cutters in enumerate(cutters_by_part):
+            name = f"Part_{index + 1}"
+            try:
+                tool = Part.makeCompound(tuple(part_cutters))
+                with operation(
+                    "[6] Dowels",
+                    name,
+                    f"batch cut {len(part_cutters)} validated dowels",
+                    drilled[index],
+                ):
+                    drilled[index] = drilled[index].cut(tool)
+            except Exception as error:
+                raise DowelPlanningError(
+                    f"Boolean batch drilling failed in {name}."
+                ) from error
+            if not tuple(drilled[index].Solids) or float(drilled[index].Volume) <= 0.0:
+                raise DowelPlanningError(
+                    f"Batch drilling produced unusable geometry in {name}."
+                )
         result_shape = Part.makeCompound(tuple(drilled))
         after = sum(float(solid.Volume) for solid in drilled)
         drilled_result = replace(
@@ -728,7 +1233,11 @@ class DowelPlanner:
         xmin, xmax, ymin, ymax, _, _ = bounds
         if min(x_value - xmin, xmax - x_value, y_value - ymin, ymax - y_value) < self._parameters.edge_margin_mm:
             return "outer-edge exclusion"
-        intersection = _seam_intersection(macro_result.seam_plan)
+        intersection = (
+            self._active_intersection
+            if self._active_intersection is not None
+            else _seam_intersection(macro_result.seam_plan)
+        )
         if math.hypot(x_value - intersection[0], y_value - intersection[1]) < self._parameters.center_exclusion_mm:
             return "central-intersection exclusion"
         minimum_spacing = (
@@ -760,49 +1269,20 @@ class DowelPlanner:
             center[2] + radius,
         )
         for index in branch.intended_indices:
-            box = solids[index].BoundBox
-            if not _bounds_overlap(
-                segment_bounds,
-                (
+            if len(self._solid_bounds) == len(solids):
+                solid_bounds = self._solid_bounds[index]
+            else:
+                box = solids[index].BoundBox
+                solid_bounds = (
                     float(box.XMin), float(box.XMax),
                     float(box.YMin), float(box.YMax),
                     float(box.ZMin), float(box.ZMax),
-                ),
+                )
+            if not _bounds_overlap(
+                segment_bounds,
+                solid_bounds,
             ):
                 return f"insufficient approximate material in Part_{index + 1}"
-        try:
-            from FreeCAD import Vector
-
-            probe_depth = (
-                self._parameters.minimum_useful_depth_per_side_mm
-                - _COORDINATE_TOLERANCE_MM
-            )
-            probes = (
-                Vector(
-                    center[0] - axis[0] * probe_depth,
-                    center[1] - axis[1] * probe_depth,
-                    center[2],
-                ),
-                Vector(
-                    center[0] + axis[0] * probe_depth,
-                    center[1] + axis[1] * probe_depth,
-                    center[2],
-                ),
-            )
-            for index in branch.intended_indices:
-                if not any(
-                    solids[index].isInside(
-                        probe, _COORDINATE_TOLERANCE_MM, True
-                    )
-                    for probe in probes
-                ):
-                    return f"insufficient probe material in Part_{index + 1}"
-        except Exception as error:
-            log_event(
-                "[6] Dowels", branch.branch_id,
-                "WARNING material probe unavailable: "
-                f"{type(error).__name__}: {error}",
-            )
         return None
 
     def _exact_candidate_reason(
@@ -836,10 +1316,10 @@ class DowelPlanner:
                     f"{center[2]:.3f}) Part_{index + 1}"
                 )
                 with operation(
-                    "[6] Dowels", label, "validation cut", solid
+                    "[6] Dowels", label, "validation common"
                 ):
-                    cut_shape = solid.cut(cutter)
-                    removed = float(solid.Volume) - float(cut_shape.Volume)
+                    intersection = solid.common(cutter)
+                    removed = float(intersection.Volume)
             except Exception:
                 return "local boolean validation failed", cutter, (0.0, 0.0), False
             tolerance = volume_tolerance_mm3(float(solid.Volume))
@@ -907,9 +1387,12 @@ class DowelPlanner:
         bounds = (float(box.XMin), float(box.XMax), float(box.YMin), float(box.YMax), float(box.ZMin), float(box.ZMax))
         return tuple(mapped[key][0] for key in keys), bounds
 
-    @staticmethod
-    def _branches(macro_result):
-        point = _seam_intersection(macro_result.seam_plan)
+    def _branches(self, macro_result):
+        point = (
+            self._active_intersection
+            if self._active_intersection is not None
+            else _seam_intersection(macro_result.seam_plan)
+        )
         vertical_low, vertical_high = _split_polyline(macro_result.seam_plan.vertical.points, point)
         horizontal_low, horizontal_high = _split_polyline(macro_result.seam_plan.horizontal.points, point)
         return (
@@ -1003,14 +1486,18 @@ def _pareto_layouts(options):
     """Retain deterministic non-dominated partial coverage layouts."""
     result = []
     for candidate in sorted(
-        options, key=lambda item: (item[1], -item[2], item[3], -item[4], item[0])
+        options,
+        key=lambda item: (
+            item[1], -item[2], item[3], -item[5], -item[4], item[0]
+        ),
     ):
-        _indices, largest, smallest, deviation, quality = candidate
+        _indices, largest, smallest, deviation, quality, material = candidate
         if any(
             prior[1] <= largest + _COORDINATE_TOLERANCE_MM
             and prior[2] >= smallest - _COORDINATE_TOLERANCE_MM
             and prior[3] <= deviation + _COORDINATE_TOLERANCE_MM
             and prior[4] >= quality - _COORDINATE_TOLERANCE_MM
+            and prior[5] >= material - _COORDINATE_TOLERANCE_MM
             for prior in result
         ):
             continue
@@ -1022,6 +1509,7 @@ def _pareto_layouts(options):
                 and smallest >= prior[2] - _COORDINATE_TOLERANCE_MM
                 and deviation <= prior[3] + _COORDINATE_TOLERANCE_MM
                 and quality >= prior[4] - _COORDINATE_TOLERANCE_MM
+                and material >= prior[5] - _COORDINATE_TOLERANCE_MM
             )
         ]
         result.append(candidate)
@@ -1045,6 +1533,13 @@ def _bounds_overlap(first, second):
         or first[5] < second[4] - _COORDINATE_TOLERANCE_MM
         or second[5] < first[4] - _COORDINATE_TOLERANCE_MM
     )
+
+
+def _xy_bounds_distance(first, second):
+    """Return the Euclidean gap between two XY axis-aligned boxes."""
+    dx = max(float(second[0]) - float(first[2]), float(first[0]) - float(second[2]), 0.0)
+    dy = max(float(second[1]) - float(first[3]), float(first[1]) - float(second[3]), 0.0)
+    return math.hypot(dx, dy)
 
 
 def _candidate_distances(target, start, end, *, search_limit=None):

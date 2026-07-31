@@ -13,11 +13,13 @@ from __future__ import annotations
 import math
 import time
 from dataclasses import dataclass, replace
+from itertools import combinations
 
 from .Exceptions import SplitOperationError
 from .Settings import Settings
 
 _COORDINATE_TOLERANCE_MM = 1.0e-6
+_PRINTABLE_ROUTE_RESERVE_MM = 3.0
 
 __all__ = [
     "BoundaryFeature2D",
@@ -659,6 +661,7 @@ class SinuousSeamPathFinder:
         panel_bounds: tuple[float, float, float, float],
         features: tuple[BoundaryFeature2D, ...],
         detour_levels_by_feature: dict[str, int] | None = None,
+        _allow_subset_fallback: bool = True,
     ) -> SeamPath2D:
         """Choose a few non-overlapping deterministic boundary detours."""
         xmin, xmax, ymin, ymax = panel_bounds
@@ -669,8 +672,12 @@ class SinuousSeamPathFinder:
             if axis == "vertical"
             else self._split_settings.MAX_PART_HEIGHT
         )
-        allowed_min = cross_max - configured_limit
-        allowed_max = cross_min + configured_limit
+        # Keep a narrow envelope for the fixed-width material-side lip.  A
+        # transition may lie inside an opening while its lip still reaches the
+        # printable part boundary.
+        reserve = _PRINTABLE_ROUTE_RESERVE_MM if axis == "vertical" else 0.0
+        allowed_min = cross_max - configured_limit + reserve
+        allowed_max = cross_min + configured_limit - reserve
         ranked = []
         for feature in features:
             cache_key = (
@@ -758,6 +765,12 @@ class SinuousSeamPathFinder:
         if assembled is None:
             key = f"{axis}_assembly_fallbacks"
             self._diagnostics[key] = self._diagnostics.get(key, 0) + 1
+            fallback = self._real_feature_subset_fallback(
+                axis, nominal, center_other, panel_bounds, adjusted,
+                detour_levels_by_feature, _allow_subset_fallback,
+            )
+            if fallback is not None:
+                return fallback
             return self._straight_path(axis, nominal, panel_bounds)
         (
             raw_points, smoothed_points, followed, followed_bounds,
@@ -765,14 +778,31 @@ class SinuousSeamPathFinder:
             artificial_before, artificial_after,
         ) = assembled
         raw_compact = _deduplicate(tuple(raw_points))
+        bounded_points = tuple(
+            Point2D(
+                min(max(point.x_mm, allowed_min), allowed_max),
+                point.y_mm,
+            )
+            if axis == "vertical" else Point2D(
+                point.x_mm,
+                min(max(point.y_mm, allowed_min), allowed_max),
+            )
+            for point in smoothed_points
+        )
         compact = _clean_open_path(
-            tuple(smoothed_points),
+            bounded_points,
             min(self._parameters.path_simplify_tolerance_mm, 0.20),
             self._parameters.maximum_artificial_turn_deg,
         )
         if not _strictly_monotone(compact, axis) or _self_intersects(compact):
             key = f"{axis}_geometry_fallbacks"
             self._diagnostics[key] = self._diagnostics.get(key, 0) + 1
+            fallback = self._real_feature_subset_fallback(
+                axis, nominal, center_other, panel_bounds, adjusted,
+                detour_levels_by_feature, _allow_subset_fallback,
+            )
+            if fallback is not None:
+                return fallback
             return self._straight_path(axis, nominal, panel_bounds)
         path_length = _polyline_length(compact)
         return SeamPath2D(
@@ -805,6 +835,49 @@ class SinuousSeamPathFinder:
             detour_feature_ids=tuple(item[1] for item in detour_units),
             detour_levels=tuple(item[2] for item in detour_units),
         )
+
+    def _real_feature_subset_fallback(
+        self, axis, nominal, center_other, panel_bounds, selected,
+        detour_levels_by_feature, enabled,
+    ):
+        """Recover a bounded route from real contours after full assembly fails."""
+        if not enabled or len(selected) < 2:
+            return None
+        features = tuple(item[5] for item in selected)
+        candidates = []
+        maximum = 4
+        for count in range(min(maximum, len(features)), 1, -1):
+            for subset in combinations(features, count):
+                path = self._build_path(
+                    axis,
+                    nominal,
+                    center_other,
+                    panel_bounds,
+                    subset,
+                    detour_levels_by_feature,
+                    _allow_subset_fallback=False,
+                )
+                if len(path.followed_feature_ids) >= 2:
+                    candidates.append(path)
+        if not candidates:
+            return None
+        recovered = min(
+            candidates,
+            key=lambda path: (
+                -len(path.followed_feature_ids),
+                _lower_branch_overfill(path, center_other),
+                _central_bridge_gap(path, center_other),
+                -path.contour_following_length_mm,
+                _contour_branch_imbalance(path, center_other),
+                path.longest_straight_segment_mm,
+                path.maximum_deviation_mm,
+                path.points,
+            ),
+        )
+        self._diagnostics[f"{axis}_subset_recoveries"] = (
+            self._diagnostics.get(f"{axis}_subset_recoveries", 0) + 1
+        )
+        return recovered
 
     def _assemble_feature_route(
         self, selected, axis, nominal, center_other, travel_min, travel_max
@@ -1950,6 +2023,51 @@ def _self_intersects(points: tuple[Point2D, ...]) -> bool:
             if _segments_intersect(points[first], points[first + 1], points[second], points[second + 1]):
                 return True
     return False
+
+
+def _contour_branch_imbalance(path: SeamPath2D, center: float) -> float:
+    """Return followed-contour imbalance across the two seam branches."""
+    below = 0.0
+    above = 0.0
+    for report in path.hole_offset_reports:
+        bounds = report.boundary_bounds_mm
+        travel_center = (
+            0.5 * (bounds[1] + bounds[3])
+            if path.axis == "vertical"
+            else 0.5 * (bounds[0] + bounds[2])
+        )
+        if travel_center < center:
+            below += report.followed_contour_length_mm
+        else:
+            above += report.followed_contour_length_mm
+    return abs(below - above)
+
+
+def _lower_branch_overfill(path: SeamPath2D, center: float) -> int:
+    """Prefer the upper branch for the odd detour in a bounded vertical route."""
+    if path.axis != "vertical":
+        return 0
+    below = sum(
+        0.5 * (bounds[1] + bounds[3]) < center
+        for bounds in path.followed_feature_bounds_mm
+    )
+    above = len(path.followed_feature_bounds_mm) - below
+    return max(0, below - above)
+
+
+def _central_bridge_gap(path: SeamPath2D, center: float) -> float:
+    """Prefer real contours that anchor both ends of the central transition."""
+    if len(path.followed_feature_ids) >= 4:
+        return 0.0
+    intervals = tuple(
+        ((bounds[1], bounds[3]) if path.axis == "vertical" else (bounds[0], bounds[2]))
+        for bounds in path.followed_feature_bounds_mm
+    )
+    below = tuple(end for start, end in intervals if end < center)
+    above = tuple(start for start, end in intervals if start > center)
+    if not below or not above:
+        return math.inf
+    return (center - max(below)) + (min(above) - center)
 
 
 def _intersection_count(vertical, horizontal) -> int:

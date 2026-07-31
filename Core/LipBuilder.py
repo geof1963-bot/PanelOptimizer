@@ -10,7 +10,10 @@ from .Exceptions import LipBuildError
 from .MacroSplitCore import MacroGrooveParameters, MacroSplitResult
 from .Settings import Settings
 from .ProductionDiagnostics import log_event, operation
-from .SplittingUtilities import volume_tolerance_mm3
+from .SplittingUtilities import (
+    PARTITION_CLASSIFICATION_TOLERANCE_MM,
+    volume_tolerance_mm3,
+)
 
 __all__ = ["LipApplication", "LipBuilder", "LipParameters", "LipPartReport"]
 
@@ -147,11 +150,18 @@ class LipBuilder:
                 raise LipBuildError(f"Lip fusion did not preserve one positive {name} solid.")
             after_box = fused.BoundBox
             added = float(fused.Volume) - before_volume
-            within_x = float(after_box.XLength) <= float(self._split_settings.MAX_PART_WIDTH)
-            within_y = float(after_box.YLength) <= float(self._split_settings.MAX_PART_HEIGHT)
+            within_x = float(after_box.XLength) <= (
+                float(self._split_settings.MAX_PART_WIDTH)
+                + PARTITION_CLASSIFICATION_TOLERANCE_MM
+            )
+            within_y = float(after_box.YLength) <= (
+                float(self._split_settings.MAX_PART_HEIGHT)
+                + PARTITION_CLASSIFICATION_TOLERANCE_MM
+            )
             if not (within_x and within_y):
                 raise LipBuildError(
-                    f"{name} exceeds configured printable bounds after local lip clipping."
+                    f"{name} exceeds configured printable bounds after local "
+                    f"lip clipping: {self._dimensions(after_box)} mm."
                 )
             fused_parts.append(fused)
             preview_pieces.append(lip_shape)
@@ -341,15 +351,17 @@ class LipBuilder:
 
     @staticmethod
     def _dowel_holes_are_open(result_shape, cutters):
-        for cutter in tuple(cutters):
-            try:
-                overlap = float(result_shape.common(cutter).Volume)
-                tolerance = volume_tolerance_mm3(float(cutter.Volume))
-            except Exception as error:
-                raise LipBuildError("Unable to verify a dowel cavity.") from error
-            if overlap > tolerance:
-                return False
-        return True
+        cutters = tuple(cutters)
+        if not cutters:
+            return True
+        try:
+            import Part
+            tool = Part.makeCompound(cutters)
+            overlap = float(result_shape.common(tool).Volume)
+            tolerance = volume_tolerance_mm3(float(tool.Volume))
+        except Exception as error:
+            raise LipBuildError("Unable to verify dowel cavities.") from error
+        return overlap <= tolerance
 
     @staticmethod
     def _dimensions(box):

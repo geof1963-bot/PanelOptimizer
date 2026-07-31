@@ -2,8 +2,8 @@
 name = PanelOptimizer
 title = PanelOptimizer Workbench
 description = Intelligent preparation of large artistic panels for FDM 3D printing.
-version = 5.00.0
-date = 2026-07-26
+version = 5.01.0
+date = 2026-07-31
 author = Geoffroy
 maintainer = Geoffroy
 license = GPL-3.0-or-later

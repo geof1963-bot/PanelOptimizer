@@ -410,12 +410,13 @@ class PanelOptimizerSplitPanelCommand:
             return False
 
     def Activated(self):
-        """Run the instrumented V5.00 Split Panel production pipeline."""
+        """Run the instrumented V5.01 Split Panel production pipeline."""
         if self._running:
             self._error("PanelOptimizer: Split Panel already running.")
             return
         self._running = True
-        start_run("PanelOptimizer Split Panel V5.00")
+        self._last_run_evidence = None
+        start_run("PanelOptimizer Split Panel V5.01")
         document = FreeCAD.ActiveDocument
         if document is None:
             self._error("PanelOptimizer: no active document.")
@@ -424,7 +425,7 @@ class PanelOptimizerSplitPanelCommand:
             return
 
         FreeCAD.Console.PrintMessage(
-            "PanelOptimizer Split Pipeline V5.00\n"
+            "PanelOptimizer Split Pipeline V5.01\n"
         )
 
         timings = {}
@@ -867,6 +868,22 @@ class PanelOptimizerSplitPanelCommand:
                     mesh_parts, output_directory, timings=timings
                 )
             timings["total"] = time.perf_counter() - total_started - interactive_wait
+            self._last_run_evidence = {
+                "seam_plan": macro_result.seam_plan,
+                "dowel_plan": dowel_application.plan,
+                "lip_reports": lip_application.reports,
+                "mesh_parts": tuple(mesh_parts),
+                "stl_artifacts": tuple(artifacts),
+                "timings": dict(timings),
+                "part_dimensions_mm": tuple(
+                    (
+                        float(solid.BoundBox.XLength),
+                        float(solid.BoundBox.YLength),
+                        float(solid.BoundBox.ZLength),
+                    )
+                    for solid in macro_result.shape.Solids
+                ),
+            }
             FreeCAD.Console.PrintMessage(
                 f"{len(artifacts)} STL files exported.\n"
             )
@@ -1028,9 +1045,9 @@ class PanelOptimizerSplitPanelCommand:
 
     @staticmethod
     def _print_performance(timings) -> None:
-        """Print one concise V5.00 stage report in seconds."""
+        """Print one concise V5.01 stage report in seconds."""
         FreeCAD.Console.PrintMessage(
-            "PanelOptimizer Performance V5.00\n"
+            "PanelOptimizer Performance V5.01\n"
             f"Contour prep + route search: {timings.get('seams', 0.0):.3f} s\n"
             f"Topology validation: "
             f"{timings.get('topology_validation', 0.0):.3f} s\n"
