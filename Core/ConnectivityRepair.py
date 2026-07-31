@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""V4.74A connectivity diagnosis for explicit XY ownership regions.
+"""Connectivity diagnosis for explicit XY ownership regions.
 
 This module is deliberately read-only.  It describes the exact solids returned
 by an ownership ``common()`` and maps secondary material to the closest local
@@ -129,7 +129,7 @@ class RegionConnectivityDiagnosis:
         )
 
     def failure_message(self) -> str:
-        """Render the detailed V4.74A user-facing failure report."""
+        """Render the detailed connectivity-repair user-facing failure report."""
         secondary = self.secondary
         detour = secondary.nearest_detour_id or secondary.nearest_segment_id
         component_lines = []

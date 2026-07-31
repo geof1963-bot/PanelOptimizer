@@ -159,7 +159,7 @@ def resolve_source_shape(shape: object) -> ResolvedSourceShape:
         )
         raise InvalidShapeError(
             f"Selected shape contains {len(solids)} solids ({valid_count} "
-            "valid); V4.00 requires exactly one."
+            "valid); PanelOptimizer requires exactly one."
         )
 
     contained = diagnostic.solids[0]

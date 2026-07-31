@@ -71,7 +71,7 @@ volume. No SliceAPI, general-fuse, global remeshing, or generic hole filling is
 used. Intelligent seams, path scoring, automatic offset optimization, and
 joinery are not part of V4.26.
 
-The previous V4.00 `SplitterEngine`, result writer, and `ExportEngine` remain in
+The previous fixed-split `SplitterEngine`, result writer, and `ExportEngine` remain in
 the repository for later evaluation and are not deleted by this mission.
 
 ## V4.30 practical sinuous seams
@@ -110,7 +110,7 @@ unchanged. `PanelOptimizer_Dowels` previews the planned cylinders, while only
 the four drilled parts proceed to the unchanged V4.26 mesh and transactional
     STL pipeline. No dowel solid, strength score, lip, or other joinery is created.
 
-## V4.74A connectivity-aware region repair
+## Connectivity-aware region repair
 
 Explicit sinuous XY ownership remains the current partition strategy. If an
 artistic opening and a local seam detour isolate a secondary material
@@ -125,7 +125,7 @@ fused or bridged.
 
 ## V4.74B non-structural B-rep slivers
 
-Before V4.74A repair is considered, every secondary ownership solid is now
+Before connectivity repair is considered, every secondary ownership solid is now
 classified independently. A component is ignored only when absolute volume,
 volume ratio, Z-thickness ratio, and XY footprint are all below conservative
 configured limits, it lies close to a seam or artistic boundary, and it does
@@ -161,10 +161,10 @@ evidence instead of the former immediate extraction error. Historical reserve
 routes and raw `solid_count == 4` acceptance are no longer used. Dowels, lips,
 mesh generation, and STL export begin only after all four region connectivity
 counts are exactly one. Normal command output starts with
-`PanelOptimizer Split Pipeline V4.76` and reports raw/sliver/structural counts
+`PanelOptimizer Split Pipeline V5.00` and reports raw/sliver/structural counts
 for every final region.
 
-V4.76 classifies shallow sparse fragments by effective material footprint
+Structural-fragment classification uses the effective material footprint
 (`volume / Z thickness`) instead of XY bounding-box extent. Volume ratio,
 thickness ratio, effective area, and original exterior/silhouette protection
 jointly determine whether secondary material is structural. Production logs
@@ -269,14 +269,14 @@ Automatic STL generation.
 
 # Current Version
 
-**V4.00**
+**V5.00**
 
 Status:
 
-- Functional deterministic four-part solid split
-- Effective printable-limit validation
-- Transactional four-file STL export
-- Existing analysis architecture
+- Real `FINAL_PANEL` production pipeline validated end-to-end
+- Sinuous four-part split with structural-fragment classification
+- Dowel and lip construction with durable OCC/Mesh stage diagnostics
+- Watertight transactional four-file STL export and reopen validation
 
 ---
 

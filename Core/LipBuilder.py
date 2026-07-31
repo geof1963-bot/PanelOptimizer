@@ -9,6 +9,7 @@ from dataclasses import dataclass, replace
 from .Exceptions import LipBuildError
 from .MacroSplitCore import MacroGrooveParameters, MacroSplitResult
 from .Settings import Settings
+from .ProductionDiagnostics import log_event, operation
 from .SplittingUtilities import volume_tolerance_mm3
 
 __all__ = ["LipApplication", "LipBuilder", "LipParameters", "LipPartReport"]
@@ -109,7 +110,10 @@ class LipBuilder:
             trimmed = rejected = 0
             for candidate, ideal_volume in candidates:
                 try:
-                    clipped = candidate.cut(exclusion).common(mask)
+                    with operation(
+                        "[7] Lips", name, "clip candidate", candidate
+                    ):
+                        clipped = candidate.cut(exclusion).common(mask)
                     actual_volume = float(clipped.Volume)
                 except Exception as error:
                     raise LipBuildError(f"Local lip clipping failed for {name}.") from error
@@ -123,14 +127,20 @@ class LipBuilder:
             if not pieces:
                 raise LipBuildError(f"No lip material survived clipping for {name}.")
             try:
-                lip_shape = (
-                    pieces[0].multiFuse(pieces[1:]) if len(pieces) > 1 else pieces[0]
-                )
-                fused = solid.fuse(lip_shape)
+                with operation("[7] Lips", name, "fuse lip pieces", solid):
+                    lip_shape = (
+                        pieces[0].multiFuse(pieces[1:])
+                        if len(pieces) > 1 else pieces[0]
+                    )
+                    fused = solid.fuse(lip_shape)
                 try:
                     fused = fused.removeSplitter()
-                except Exception:
-                    pass
+                except Exception as error:
+                    log_event(
+                        "[7] Lips", name,
+                        "WARNING removeSplitter failed: "
+                        f"{type(error).__name__}: {error}",
+                    )
             except Exception as error:
                 raise LipBuildError(f"Lip fusion failed for {name}.") from error
             if len(tuple(fused.Solids)) != 1 or float(fused.Volume) <= before_volume:

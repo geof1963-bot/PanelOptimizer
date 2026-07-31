@@ -7,6 +7,7 @@ import math
 from dataclasses import dataclass
 
 from .ConnectivityRepair import diagnose_region_connectivity
+from .ProductionDiagnostics import log_event, operation
 from .Exceptions import (
     RegionConnectivityError,
     SplitOperationError,
@@ -370,7 +371,13 @@ class MacroSplitCore:
                 panel_shape, zmin, zmax, Part, Vector
             )
             for index, tool in enumerate(region_tools, start=1):
-                owned = panel_shape.common(tool)
+                with operation(
+                    "[3] Build ownership regions",
+                    f"Region_{index}",
+                    "panel.common(region_tool)",
+                    panel_shape,
+                ):
+                    owned = panel_shape.common(tool)
                 owned_solids = tuple(owned.Solids)
                 ownership_discarded = 0
                 if len(owned_solids) != 1:
@@ -392,13 +399,32 @@ class MacroSplitCore:
                         reverse=True,
                     )[structural[0].rank - 1]
                     ownership_discarded = len(diagnosis.ignored_slivers)
-                surface_part = owned.cut(surface_vertical).cut(surface_horizontal)
-                final_part = owned.cut(full_vertical).cut(full_horizontal)
+                with operation(
+                    "[4] Extract structural parts",
+                    f"Region_{index}",
+                    "surface groove cuts",
+                    owned,
+                ):
+                    surface_part = owned.cut(surface_vertical).cut(
+                        surface_horizontal
+                    )
+                with operation(
+                    "[4] Extract structural parts",
+                    f"Region_{index}",
+                    "full-depth seam cuts",
+                    owned,
+                ):
+                    final_part = owned.cut(full_vertical).cut(full_horizontal)
                 try:
                     surface_part = surface_part.removeSplitter()
                     final_part = final_part.removeSplitter()
-                except Exception:
-                    pass
+                except Exception as error:
+                    log_event(
+                        "[4] Extract structural parts",
+                        f"Region_{index}",
+                        "WARNING removeSplitter failed: "
+                        f"{type(error).__name__}: {error}",
+                    )
                 raw_solids = tuple(final_part.Solids)
                 if len(raw_solids) == 1:
                     final_solid = raw_solids[0]

@@ -47,7 +47,7 @@ from completed analysis. `JoineryEngine` describes joints for an approved split
 plan. `SplitterEngine` creates new printable geometry. `ExportEngine` writes
 approved results.
 
-V4.00 also provides a deliberately bounded prototype path that bypasses the
+The legacy release also provides a deliberately bounded prototype path that bypasses the
 unimplemented intelligent path, scoring, and joinery stages:
 
 ```text
@@ -138,7 +138,7 @@ remains at its exact model-defined default.
 
 ### SplitterEngine
 
-- Purpose: create printable-part geometry. V4.00 implements only the fixed
+- Purpose: create printable-part geometry. The legacy prototype implements only the fixed
   four-quadrant center-plane prototype; future planned paths remain reserved.
 - Prototype inputs: one caller-owned solid, its stable source ID, and
   authoritative `Settings.Split` effective X/Y limits.
@@ -153,7 +153,7 @@ remains at its exact model-defined default.
 - Output: `ExportReport`.
 - Must not: analyze, plan, split, or modify part design.
 
-### V4.00 fixed split prototype
+### Legacy fixed split prototype
 
 `SplitterEngine.split_four_quadrants` validates that the source contains
 exactly one valid non-empty solid. It calculates X/Y cuts at the source
@@ -201,7 +201,7 @@ shapes. Delete-and-recreate was rejected because FreeCAD transaction abort did
 not reliably restore group membership for reused object names. Unowned,
 incomplete, or altered reserved-name sets fail before document mutation.
 
-`ExportEngine` supports STL only in V4.00. It resolves each part through its
+`ExportEngine` supports STL only in the legacy prototype. It resolves each part through its
 opaque geometry reference, writes four partial files, validates non-empty
 content, and only then atomically finalizes `Part_1.stl` through `Part_4.stl`.
 Known partial files are removed on failure, and pre-existing final files are
@@ -270,7 +270,7 @@ four solids enters the unchanged V4.26 mesh/export pipeline. Runtime paths and
 FreeCAD cutters never enter `Core.Models`. Preview objects are document-only UI
 artifacts and remain separate from `PanelOptimizer_Result`.
 
-### V4.74A connectivity-aware region correction
+### Connectivity-aware region correction
 
 `MacroSplitCore.cut_regions` still constructs the four explicit, closed,
 non-overlapping XY ownership regions. A multi-solid ownership result is now a
@@ -611,7 +611,7 @@ limits.
   `Complexity`: focused geometric observation records.
 - `Paths`: unranked candidate path records.
 - `Scoring`: explainable scoring and ranking records.
-- `Split`: future split/joinery plans plus V4.00 printable-part and fixed-split
+- `Split`: future split/joinery plans plus legacy printable-part and fixed-split
   result records.
 - `Export`: exported artifact and report records.
 

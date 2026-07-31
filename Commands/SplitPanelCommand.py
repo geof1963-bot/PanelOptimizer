@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import os
 import time
+import traceback
 from dataclasses import dataclass, replace
 
 import FreeCAD
@@ -20,6 +21,16 @@ from Core.LipBuilder import LipBuilder, LipParameters
 from Core.MacroPartExtractor import MacroPartExtractor
 from Core.MacroSplitCore import MacroGrooveParameters, MacroSplitCore
 from Core.MeshPatchRebuilder import build_macro_mesh_parts, export_mesh_parts
+from Core.ProductionDiagnostics import (
+    current_context,
+    save_shape_artifact,
+    finish_run,
+    log_event,
+    log_exception,
+    operation,
+    shape_facts,
+    start_run,
+)
 from Core.Settings import Settings
 from Core.SinuousSeamPath import SinuousSeamPathFinder
 from Core.SplitWorkflow import SplitDocumentWriter, validate_single_selection
@@ -355,6 +366,8 @@ def _run_production_partition(
 class PanelOptimizerSplitPanelCommand:
     """Create, validate, and export four parts from macro-cut geometry."""
 
+    _running = False
+
     def __init__(
         self,
         vertical_offset: float = 0.0,
@@ -382,39 +395,84 @@ class PanelOptimizerSplitPanelCommand:
         }
 
     def IsActive(self):
-        """Enable the command whenever a FreeCAD document is active."""
-        return FreeCAD.ActiveDocument is not None
+        """Enable only for one selected object containing a usable solid."""
+        if self._running or FreeCAD.ActiveDocument is None:
+            return False
+        try:
+            selection = tuple(FreeCADGui.Selection.getSelection())
+            return (
+                len(selection) == 1
+                and hasattr(selection[0], "Shape")
+                and not selection[0].Shape.isNull()
+                and len(tuple(selection[0].Shape.Solids)) >= 1
+            )
+        except Exception:
+            return False
 
     def Activated(self):
-        """Run V4.30 seams, V4.40 dowels, V4.50 lips, and four-STL export."""
+        """Run the instrumented V5.00 Split Panel production pipeline."""
+        if self._running:
+            self._error("PanelOptimizer: Split Panel already running.")
+            return
+        self._running = True
+        start_run("PanelOptimizer Split Panel V5.00")
         document = FreeCAD.ActiveDocument
         if document is None:
             self._error("PanelOptimizer: no active document.")
+            finish_run("invalid-document")
+            self._running = False
             return
 
         FreeCAD.Console.PrintMessage(
-            "PanelOptimizer Split Pipeline V4.77\n"
+            "PanelOptimizer Split Pipeline V5.00\n"
         )
 
         timings = {}
         total_started = time.perf_counter()
         interactive_wait = 0.0
+        run_status = "failed"
         try:
-            source_object = validate_single_selection(
-                FreeCADGui.Selection.getSelection()
+            with operation("[1] Resolve source", "selection", "validate"):
+                source_object = validate_single_selection(
+                    FreeCADGui.Selection.getSelection()
+                )
+            log_event(
+                "[1] Resolve source",
+                str(source_object.Name),
+                "OK " + shape_facts(source_object.Shape),
             )
             self._validate_seam_preview_names(document)
+            self._yield_gui()
             started = time.perf_counter()
-            partition = _run_production_partition(
+            with operation(
+                "[2-5] Partition",
+                str(source_object.Name),
+                "production partition",
                 source_object.Shape,
-                self._vertical_offset,
-                self._horizontal_offset,
-                self._parameters,
-            )
+            ):
+                partition = _run_production_partition(
+                    source_object.Shape,
+                    self._vertical_offset,
+                    self._horizontal_offset,
+                    self._parameters,
+                )
             bounds = source_object.Shape.BoundBox
             seam_diagnostics = partition.seam_diagnostics
             timings["seams"] = time.perf_counter() - started
             macro_result = partition.macro_result
+            save_shape_artifact("pre_dowel_parts", macro_result.shape)
+            for path in (
+                macro_result.seam_plan.vertical,
+                macro_result.seam_plan.horizontal,
+            ):
+                log_event(
+                    "[2] Build seam guides",
+                    path.axis,
+                    f"points={len(path.points)} "
+                    f"length_mm={path.path_length_mm:.6f} "
+                    f"max_deviation_mm={path.maximum_deviation_mm:.6f} "
+                    f"detours={path.detour_ids}",
+                )
             exact_topology_validations = partition.exact_validations
             rejected_topology_seconds = partition.rejected_seconds
             successful_split_seconds = partition.successful_seconds
@@ -426,24 +484,55 @@ class PanelOptimizerSplitPanelCommand:
             timings["topology_validation"] = rejected_topology_seconds
             timings["split"] = successful_split_seconds
             planner = DowelPlanner()
+            self._yield_gui()
             started = time.perf_counter()
-            dowel_plan = planner.plan(macro_result)
+            with operation("[6] Dowels", "all parts", "plan", macro_result.shape):
+                dowel_plan = planner.plan(macro_result)
+            log_event(
+                "[6] Dowels", "plan",
+                f"count={len(dowel_plan.dowels)} "
+                f"branches={tuple((item.branch_id, len(item.accepted_dowel_ids)) for item in dowel_plan.branches)}",
+            )
             timings["dowel_plan"] = time.perf_counter() - started
             started = time.perf_counter()
-            dowel_application = planner.apply(macro_result, dowel_plan)
+            with operation("[6] Dowels", "all parts", "apply", macro_result.shape):
+                dowel_application = planner.apply(macro_result, dowel_plan)
+            save_shape_artifact(
+                "pre_lip_parts", dowel_application.macro_result.shape
+            )
             timings["dowel_cut"] = time.perf_counter() - started
             started = time.perf_counter()
-            lip_application = LipBuilder(
-                LipParameters(
-                    groove_top_width_mm=self._parameters.top_width_mm,
+            self._yield_gui()
+            with operation(
+                "[7] Lips", "all parts", "build",
+                dowel_application.macro_result.shape,
+            ):
+                lip_application = LipBuilder(
+                    LipParameters(
+                        groove_top_width_mm=self._parameters.top_width_mm,
+                    )
+                ).apply(
+                    dowel_application.macro_result,
+                    dowel_cutters=dowel_application.cutters,
                 )
-            ).apply(
-                dowel_application.macro_result,
-                dowel_cutters=dowel_application.cutters,
-            )
             timings["lips"] = time.perf_counter() - started
             macro_result = lip_application.macro_result
-            mesh_parts = build_macro_mesh_parts(macro_result, timings=timings)
+            for report in lip_application.reports:
+                log_event(
+                    "[7] Lips", report.name,
+                    f"added_mm3={report.volume_added_mm3:.6f} "
+                    f"dimensions_before={report.dimensions_before_mm} "
+                    f"dimensions_after={report.dimensions_after_mm}",
+                )
+            save_shape_artifact("post_lip_parts", macro_result.shape)
+            self._yield_gui()
+            with operation(
+                "[8-9] Mesh", "all parts", "tessellate and repair",
+                macro_result.shape,
+            ):
+                mesh_parts = build_macro_mesh_parts(
+                    macro_result, timings=timings
+                )
             extraction = MacroPartExtractor().extract(
                 macro_result,
                 str(source_object.Name),
@@ -756,6 +845,7 @@ class PanelOptimizerSplitPanelCommand:
                         if not part.is_printable
                     )
                 )
+                run_status = "rejected"
                 return
             wait_started = time.perf_counter()
             output_directory = self._select_output_directory()
@@ -767,22 +857,36 @@ class PanelOptimizerSplitPanelCommand:
                 )
                 timings["total"] = time.perf_counter() - total_started - interactive_wait
                 self._print_performance(timings)
+                run_status = "cancelled"
                 return
-            artifacts = export_mesh_parts(
-                mesh_parts, output_directory, timings=timings
-            )
+            self._yield_gui()
+            with operation(
+                "[10] STL export/reopen", "all parts", "transactional export"
+            ):
+                artifacts = export_mesh_parts(
+                    mesh_parts, output_directory, timings=timings
+                )
             timings["total"] = time.perf_counter() - total_started - interactive_wait
             FreeCAD.Console.PrintMessage(
                 f"{len(artifacts)} STL files exported.\n"
             )
             self._print_performance(timings)
+            run_status = "complete"
         except PanelOptimizerError as error:
+            log_exception(error)
             self._error(f"PanelOptimizer: {error}")
         except Exception as error:
+            log_exception(error)
+            stage, item = current_context()
             self._error(
                 "PanelOptimizer: unexpected macro split failure: "
-                f"{error}"
+                f"{type(error).__name__}: {error}\n"
+                f"Stage: {stage}; item: {item}\n"
+                + traceback.format_exc()
             )
+        finally:
+            finish_run(run_status)
+            self._running = False
 
     @staticmethod
     def _validate_seam_preview_names(document) -> None:
@@ -924,9 +1028,9 @@ class PanelOptimizerSplitPanelCommand:
 
     @staticmethod
     def _print_performance(timings) -> None:
-        """Print one concise V4.61 stage report in seconds."""
+        """Print one concise V5.00 stage report in seconds."""
         FreeCAD.Console.PrintMessage(
-            "PanelOptimizer Performance V4.74A\n"
+            "PanelOptimizer Performance V5.00\n"
             f"Contour prep + route search: {timings.get('seams', 0.0):.3f} s\n"
             f"Topology validation: "
             f"{timings.get('topology_validation', 0.0):.3f} s\n"
@@ -959,6 +1063,20 @@ class PanelOptimizerSplitPanelCommand:
     def _error(message: str) -> None:
         """Emit one concise command failure without changing the source."""
         FreeCAD.Console.PrintError(message.rstrip() + "\n")
+
+    @staticmethod
+    def _yield_gui() -> None:
+        """Let Qt repaint between major main-thread OCC stages."""
+        try:
+            from PySide import QtGui
+            application = QtGui.QApplication.instance()
+            if application is not None:
+                application.processEvents()
+        except Exception as error:
+            log_event(
+                "GUI", "processEvents",
+                f"WARNING {type(error).__name__}: {error}",
+            )
 
 
 if hasattr(FreeCADGui, "addCommand"):

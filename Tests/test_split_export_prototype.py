@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""FreeCAD integration tests for the V4.00 four-part split prototype."""
+"""FreeCAD integration tests for the legacy four-part split prototype."""
 
 from __future__ import annotations
 

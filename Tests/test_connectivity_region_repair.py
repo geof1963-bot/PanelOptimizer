@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""Focused V4.74A connectivity-aware region partition regressions."""
+"""Focused connectivity-aware region partition regressions."""
 
 from __future__ import annotations
 

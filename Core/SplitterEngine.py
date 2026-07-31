@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""Deterministic four-quadrant solid splitting for the V4.00 prototype."""
+"""Deterministic four-quadrant solid splitting for the legacy prototype."""
 
 from __future__ import annotations
 
@@ -134,7 +134,7 @@ class SplitterEngine:
             if len(candidates) != 1:
                 raise InvalidResultingSolidError(
                     f"{name} contains {len(candidates)} disconnected material "
-                    "components after center-plane partition; V4.00 requires "
+                    "components after center-plane partition; the prototype requires "
                     "one printable solid per quadrant."
                 )
             result_shape = self._validated_partition_solid(candidates[0], name)

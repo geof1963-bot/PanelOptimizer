@@ -53,11 +53,11 @@ class ExportEngine:
         ordered_parts = tuple(parts)
         if len(ordered_parts) != 4:
             raise ExportError(
-                f"V4.00 STL export requires exactly four parts; received "
+                f"STL export requires exactly four parts; received "
                 f"{len(ordered_parts)}."
             )
         if str(file_format).upper() != "STL":
-            raise ExportError("V4.00 supports STL export only.")
+            raise ExportError("PanelOptimizer supports STL export only.")
         split_result_ids = {item.split_result_id for item in ordered_parts}
         if len(split_result_ids) != 1:
             raise ExportError("All exported parts must belong to one split result.")

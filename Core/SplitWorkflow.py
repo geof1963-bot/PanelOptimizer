@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""Application-level selection and FreeCAD document output for V4.00."""
+"""Application-level selection and FreeCAD document output for the legacy split."""
 
 from __future__ import annotations
 
@@ -38,7 +38,7 @@ def validate_single_selection(selection: object) -> object:
 
 
 def resolve_selected_shape(source_object: object) -> ResolvedSourceShape:
-    """Resolve a selected object's shape with the shared V4.00 policy."""
+    """Resolve a selected object's shape with the shared selection policy."""
     if source_object is None or not hasattr(source_object, "Shape"):
         raise InvalidSelectionError("Selected object has no Shape.")
     return resolve_source_shape(source_object.Shape)

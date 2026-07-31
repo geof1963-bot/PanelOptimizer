@@ -11,12 +11,13 @@ import FreeCAD
 import FreeCADGui
 
 
-MODULE_DIRECTORY = os.path.abspath(
-    os.path.join(
-        FreeCAD.getUserAppDataDir(),
-        "Mod",
-        "PanelOptimizer",
-    )
+_MODULE_FILE = globals().get("__file__")
+MODULE_DIRECTORY = (
+    os.path.abspath(os.path.dirname(_MODULE_FILE))
+    if _MODULE_FILE
+    else os.path.abspath(os.path.join(
+        FreeCAD.getUserAppDataDir(), "Mod", "PanelOptimizer"
+    ))
 )
 ICON_DIRECTORY = os.path.join(
     MODULE_DIRECTORY,
@@ -66,7 +67,7 @@ class PanelOptimizerWorkbench(Workbench):
         FreeCAD.Console.PrintMessage(
             "\n"
             "=========================================\n"
-            " PanelOptimizer Workbench V4.00 loaded\n"
+            " PanelOptimizer Workbench V5.00 loaded\n"
             "=========================================\n"
         )
 

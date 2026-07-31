@@ -17,6 +17,7 @@ from dataclasses import dataclass, replace
 from .Exceptions import DowelPlanningError
 from .MacroSplitCore import MacroSplitResult
 from .Settings import Settings
+from .ProductionDiagnostics import log_event, operation
 from .SplittingUtilities import volume_tolerance_mm3
 
 __all__ = [
@@ -477,6 +478,12 @@ class DowelPlanner:
                         candidate.tangent_xy,
                     )
                 reason, _cutter, _depths, _breakout = exact_results[key]
+                log_event(
+                    "[6] Dowels",
+                    branch.branch_id,
+                    f"candidate_distance={candidate.distance_mm:.6f} "
+                    f"result={reason or 'SAFE'}",
+                )
                 if reason is not None:
                     failed_distances.add(key)
                     rejections.append(
@@ -667,7 +674,13 @@ class DowelPlanner:
             for name in dowel.intended_part_names:
                 index = name_to_index[name]
                 try:
-                    drilled[index] = drilled[index].cut(cutter)
+                    with operation(
+                        "[6] Dowels",
+                        name,
+                        f"cut {dowel.dowel_id}",
+                        drilled[index],
+                    ):
+                        drilled[index] = drilled[index].cut(cutter)
                 except Exception as error:
                     raise DowelPlanningError(
                         f"Boolean drilling failed for {dowel.dowel_id} in {name}."
@@ -757,6 +770,39 @@ class DowelPlanner:
                 ),
             ):
                 return f"insufficient approximate material in Part_{index + 1}"
+        try:
+            from FreeCAD import Vector
+
+            probe_depth = (
+                self._parameters.minimum_useful_depth_per_side_mm
+                - _COORDINATE_TOLERANCE_MM
+            )
+            probes = (
+                Vector(
+                    center[0] - axis[0] * probe_depth,
+                    center[1] - axis[1] * probe_depth,
+                    center[2],
+                ),
+                Vector(
+                    center[0] + axis[0] * probe_depth,
+                    center[1] + axis[1] * probe_depth,
+                    center[2],
+                ),
+            )
+            for index in branch.intended_indices:
+                if not any(
+                    solids[index].isInside(
+                        probe, _COORDINATE_TOLERANCE_MM, True
+                    )
+                    for probe in probes
+                ):
+                    return f"insufficient probe material in Part_{index + 1}"
+        except Exception as error:
+            log_event(
+                "[6] Dowels", branch.branch_id,
+                "WARNING material probe unavailable: "
+                f"{type(error).__name__}: {error}",
+            )
         return None
 
     def _exact_candidate_reason(
@@ -768,10 +814,32 @@ class DowelPlanner:
         expected = set(branch.intended_indices)
         section_area = math.pi * (self._parameters.hole_diameter_mm / 2.0) ** 2
         useful_depths = {}
+        cutter_box = cutter.BoundBox
+        cutter_bounds = (
+            float(cutter_box.XMin), float(cutter_box.XMax),
+            float(cutter_box.YMin), float(cutter_box.YMax),
+            float(cutter_box.ZMin), float(cutter_box.ZMax),
+        )
         for index, solid in enumerate(solids):
+            if index not in expected:
+                box = solid.BoundBox
+                solid_bounds = (
+                    float(box.XMin), float(box.XMax),
+                    float(box.YMin), float(box.YMax),
+                    float(box.ZMin), float(box.ZMax),
+                )
+                if not _bounds_overlap(cutter_bounds, solid_bounds):
+                    continue
             try:
-                cut_shape = solid.cut(cutter)
-                removed = float(solid.Volume) - float(cut_shape.Volume)
+                label = (
+                    f"candidate=({center[0]:.3f},{center[1]:.3f},"
+                    f"{center[2]:.3f}) Part_{index + 1}"
+                )
+                with operation(
+                    "[6] Dowels", label, "validation cut", solid
+                ):
+                    cut_shape = solid.cut(cutter)
+                    removed = float(solid.Volume) - float(cut_shape.Volume)
             except Exception:
                 return "local boolean validation failed", cutter, (0.0, 0.0), False
             tolerance = volume_tolerance_mm3(float(solid.Volume))

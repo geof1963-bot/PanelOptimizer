@@ -109,7 +109,7 @@ class SplitSettings:
     MAX_CONNECTIVITY_REPAIR_TIME_S: float = 30.0
     CONNECTIVITY_REPAIR_WINDOW_MM: float = 40.0
 
-    # V4.76 physical ownership-fragment classification.  Bounding-box area is
+    # Physical ownership-fragment classification. Bounding-box area is
     # diagnostic only: sparse curved fragments can occupy a very large box.
     MAX_SLIVER_VOLUME_MM3: float = 50.0
     MAX_SLIVER_VOLUME_RATIO: float = 0.00025

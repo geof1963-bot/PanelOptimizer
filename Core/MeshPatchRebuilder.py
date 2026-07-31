@@ -19,6 +19,7 @@ from pathlib import Path
 from .Exceptions import ExportError, SplitOperationError, STLExportError
 from .MacroSplitCore import MacroSplitResult
 from .Settings import Settings
+from .ProductionDiagnostics import log_event, operation, save_mesh_artifact
 from .SplittingUtilities import finite_positive
 
 LINEAR_DEFLECTION_MM = 0.1
@@ -253,8 +254,13 @@ def mesh_metrics(mesh: object) -> MeshMetrics:
 class MeshPatchRebuilder:
     """Tessellate one closed part and reconstruct only planar mesh gaps."""
 
+    def __init__(self) -> None:
+        self._production_part_index = 0
+
     def rebuild(self, source_shape: object, timings: dict | None = None) -> tuple[object, MeshMetrics, MeshMetrics, tuple[MeshPatchObservation, ...], int, int, float]:
         """Return one validated watertight mesh without changing the B-rep."""
+        self._production_part_index += 1
+        item_name = f"Part_{self._production_part_index}"
         try:
             if (
                 source_shape is None
@@ -269,13 +275,37 @@ class MeshPatchRebuilder:
             import MeshPart
 
             started = time.perf_counter()
-            mesh = MeshPart.meshFromShape(
-                Shape=source_shape,
-                LinearDeflection=LINEAR_DEFLECTION_MM,
-                AngularDeflection=math.radians(ANGULAR_DEFLECTION_DEGREES),
-                Relative=RELATIVE_DEFLECTION,
+            with operation(
+                "[8] Tessellation", item_name, "MeshPart.meshFromShape",
+                source_shape,
+            ):
+                mesh = MeshPart.meshFromShape(
+                    Shape=source_shape,
+                    LinearDeflection=LINEAR_DEFLECTION_MM,
+                    AngularDeflection=math.radians(ANGULAR_DEFLECTION_DEGREES),
+                    Relative=RELATIVE_DEFLECTION,
+                )
+            raw = mesh_metrics(mesh)
+            save_mesh_artifact(f"raw_mesh_{item_name}", mesh)
+            log_event(
+                "[8] Tessellation", item_name,
+                f"RAW triangles={raw.triangle_count} "
+                f"vertices={raw.vertex_count} open={raw.open_edge_count} "
+                f"non_manifold={raw.non_manifold_edge_count} "
+                f"components={raw.connected_component_count} "
+                f"solid={raw.is_solid}",
             )
             _clean_mesh(mesh)
+            cleaned = mesh_metrics(mesh)
+            log_event(
+                "[8] Tessellation", item_name,
+                f"CLEANED triangles={cleaned.triangle_count} "
+                f"vertices={cleaned.vertex_count} "
+                f"open={cleaned.open_edge_count} "
+                f"non_manifold={cleaned.non_manifold_edge_count} "
+                f"components={cleaned.connected_component_count} "
+                f"solid={cleaned.is_solid}",
+            )
             if timings is not None:
                 timings["mesh"] = timings.get("mesh", 0.0) + time.perf_counter() - started
         except SplitOperationError:
@@ -283,7 +313,19 @@ class MeshPatchRebuilder:
         except Exception as error:
             raise SplitOperationError("Unable to tessellate the V4.21 part.") from error
         started = time.perf_counter()
-        result = self.rebuild_mesh(mesh, source_shape)
+        with operation(
+            "[9] Mesh repair", item_name, "rebuild_mesh", source_shape
+        ):
+            result = self.rebuild_mesh(mesh, source_shape)
+        final = result[2]
+        log_event(
+            "[9] Mesh repair", item_name,
+            f"FINAL triangles={final.triangle_count} "
+            f"vertices={final.vertex_count} open={final.open_edge_count} "
+            f"non_manifold={final.non_manifold_edge_count} "
+            f"components={final.connected_component_count} "
+            f"solid={final.is_solid} size_mm={final.size_mm}",
+        )
         if timings is not None:
             timings["mesh_repair"] = (
                 timings.get("mesh_repair", 0.0) + time.perf_counter() - started
