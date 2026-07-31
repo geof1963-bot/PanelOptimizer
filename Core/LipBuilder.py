@@ -112,6 +112,9 @@ class LipBuilder:
             pieces = []
             trimmed = rejected = 0
             for candidate, ideal_volume in candidates:
+                if not self._bbox_overlaps_xy(candidate.BoundBox, before_box):
+                    rejected += 1
+                    continue
                 try:
                     with operation(
                         "[7] Lips", name, "clip candidate", candidate
@@ -260,6 +263,16 @@ class LipBuilder:
                 raise LipBuildError("Unable to batch curved lip segments.") from error
             batched.append((shape, float(shape.Volume)))
         return tuple(batched)
+
+    @staticmethod
+    def _bbox_overlaps_xy(first, second):
+        """Cheap material-footprint gate before an OCC clip operation."""
+        return not (
+            float(first.XMax) <= float(second.XMin) + _EPSILON_MM
+            or float(first.XMin) >= float(second.XMax) - _EPSILON_MM
+            or float(first.YMax) <= float(second.YMin) + _EPSILON_MM
+            or float(first.YMin) >= float(second.YMax) - _EPSILON_MM
+        )
 
     def _top_material_mask(self, solid, zmax, Part, Vector):
         """Extrude only coplanar ZMax faces, preserving openings and panel edges."""

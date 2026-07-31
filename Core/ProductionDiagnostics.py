@@ -25,7 +25,7 @@ def start_run(label: str = "Split Panel") -> Path:
         str(_DEFAULT_DIRECTORY),
     ))
     directory.mkdir(parents=True, exist_ok=True)
-    _LOG_PATH = directory / "split_panel_v501.log"
+    _LOG_PATH = directory / "split_panel_v502.log"
     _RUN_STARTED = time.perf_counter()
     _write(f"START {label}")
     return _LOG_PATH

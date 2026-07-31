@@ -75,7 +75,10 @@ class RealPanelV501Tests(unittest.TestCase):
             self.assertGreaterEqual(len(path.detour_ids), 2)
             self.assertGreaterEqual(len(path.followed_feature_ids), 2)
             self.assertGreater(path.maximum_deviation_mm, 0.5)
-            self.assertLess(path.longest_straight_segment_mm, 594.0)
+            if path.axis == "vertical":
+                self.assertLess(path.longest_straight_segment_mm, 80.0)
+            else:
+                self.assertLess(path.longest_straight_segment_mm, 100.0)
             self.assertTrue(all(
                 report.original_profile_preserved
                 for report in path.hole_offset_reports

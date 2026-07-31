@@ -726,7 +726,11 @@ class SinuousSeamPathFinder:
             ):
                 continue
             selected.append(item)
-            if len(selected) >= self._parameters.maximum_features_per_seam:
+            feature_limit = min(
+                self._parameters.maximum_features_per_seam,
+                4 if axis == "vertical" else self._parameters.maximum_features_per_seam,
+            )
+            if len(selected) >= feature_limit:
                 break
         selected.sort(key=lambda item: item[3][0])
         prefix = "VDET" if axis == "vertical" else "HDET"
@@ -789,11 +793,21 @@ class SinuousSeamPathFinder:
             )
             for point in smoothed_points
         )
+        if axis == "vertical" and adjusted:
+            bounded_points = self._insert_long_transition_points(
+                bounded_points, nominal
+            )
         compact = _clean_open_path(
             bounded_points,
             min(self._parameters.path_simplify_tolerance_mm, 0.20),
             self._parameters.maximum_artificial_turn_deg,
         )
+        if axis == "vertical" and adjusted:
+            # The generic cleaner is intentionally allowed to simplify
+            # ordinary contour samples. Re-apply only the long-bridge guard
+            # after cleanup so a valid curved transition cannot be flattened
+            # back into one visual straight segment.
+            compact = self._insert_long_transition_points(compact, nominal)
         if not _strictly_monotone(compact, axis) or _self_intersects(compact):
             key = f"{axis}_geometry_fallbacks"
             self._diagnostics[key] = self._diagnostics.get(key, 0) + 1
@@ -835,6 +849,38 @@ class SinuousSeamPathFinder:
             detour_feature_ids=tuple(item[1] for item in detour_units),
             detour_levels=tuple(item[2] for item in detour_units),
         )
+
+    def _insert_long_transition_points(self, points, nominal):
+        """Replace long exit bridges with a bounded, tangent-biased bow."""
+        result = [points[0]]
+        maximum = 70.0
+        for index, (first, second) in enumerate(zip(points, points[1:])):
+            length = _distance(first, second)
+            if length <= maximum:
+                result.append(second)
+                continue
+            span = second.y_mm - first.y_mm
+            if span <= _COORDINATE_TOLERANCE_MM:
+                result.append(second)
+                continue
+            neighbor = points[index - 1] if index else first
+            tangent_cross = neighbor.x_mm - first.x_mm
+            tangent_sign = -1.0 if tangent_cross < 0.0 else 1.0
+            bow = tangent_sign * min(12.0, max(4.0, abs(tangent_cross) * 2.0))
+            guide = max(
+                nominal - self._parameters.search_corridor_mm,
+                min(nominal + self._parameters.search_corridor_mm, nominal + bow),
+            )
+            result.append(Point2D(
+                first.x_mm * 2.0 / 3.0 + guide / 3.0,
+                first.y_mm + span / 3.0,
+            ))
+            result.append(Point2D(
+                guide * 2.0 / 3.0 + second.x_mm / 3.0,
+                first.y_mm + 2.0 * span / 3.0,
+            ))
+            result.append(second)
+        return tuple(result)
 
     def _real_feature_subset_fallback(
         self, axis, nominal, center_other, panel_bounds, selected,
@@ -1000,12 +1046,44 @@ class SinuousSeamPathFinder:
                 first_anchor, second_anchor, axis_tangent, axis_tangent, axis
             )
             if first_curve is None or second_curve is None:
-                return None
-            smoothed.extend(first_curve)
-            smoothed.extend(second_curve)
-            exit_curve = first_curve + second_curve
-            raw.extend((first_anchor, second_anchor))
-            transition_count += 2
+                # A steep contour tangent can make the strict Hermite gate
+                # reject a long exit even though a bounded, art-derived
+                # connector is safe. Keep the corridor guide and sample two
+                # deterministic easing anchors so no 150+ mm bridge survives
+                # cleanup. This is a fallback for the transition, not a
+                # decorative oscillation.
+                travel_start = travel(chain[-1])
+                travel_end = travel_max
+                span = travel_end - travel_start
+                if span <= 3.0 * _COORDINATE_TOLERANCE_MM:
+                    return None
+                guide = 0.5 * (cross(chain[-1]) + nominal)
+                guide = min(
+                    max(guide, nominal - self._parameters.search_corridor_mm),
+                    nominal + self._parameters.search_corridor_mm,
+                )
+                tangent_cross = cross(chain[-2]) - cross(chain[-1])
+                tangent_sign = -1.0 if tangent_cross < 0.0 else 1.0
+                bow = tangent_sign * min(
+                    12.0, max(4.0, abs(tangent_cross) * 2.0)
+                )
+                first_anchor = self._point(axis, guide, travel_start + span / 4.0)
+                second_anchor = self._point(
+                    axis, nominal + 1.25 * bow, travel_start + span / 2.0
+                )
+                third_anchor = self._point(
+                    axis, nominal + 0.5 * bow, travel_start + 3.0 * span / 4.0
+                )
+                exit_curve = (first_anchor, second_anchor, third_anchor)
+                raw.extend(exit_curve)
+                smoothed.extend(exit_curve)
+                transition_count += 3
+            else:
+                smoothed.extend(first_curve)
+                smoothed.extend(second_curve)
+                exit_curve = first_curve + second_curve
+                raw.extend((first_anchor, second_anchor))
+                transition_count += 2
         else:
             smoothed.extend(exit_curve)
             raw.append(exit_point)
