@@ -393,7 +393,7 @@ class PanelOptimizerSplitPanelCommand:
             return
 
         FreeCAD.Console.PrintMessage(
-            "PanelOptimizer Split Pipeline V4.76\n"
+            "PanelOptimizer Split Pipeline V4.77\n"
         )
 
         timings = {}
@@ -710,6 +710,31 @@ class PanelOptimizerSplitPanelCommand:
                 FreeCAD.Console.PrintMessage(
                     f"{part.name}: {status}\n"
                 )
+                residual = tuple(
+                    patch for patch in part.patches
+                    if patch.patch_type == "tiny_residual_loop"
+                )
+                if residual:
+                    FreeCAD.Console.PrintMessage(
+                        "Residual mesh repair:\n"
+                        f"  open edges before = "
+                        f"{sum(item.boundary_edge_count for item in residual)}\n"
+                        f"  loops = {len(residual)}\n"
+                        f"  loop perimeter = "
+                        f"{tuple(item.boundary_perimeter_mm for item in residual)}\n"
+                        f"  edge endpoints = "
+                        f"{tuple(item.boundary_endpoints_mm for item in residual)}\n"
+                        f"  edge lengths = "
+                        f"{tuple(item.boundary_edge_lengths_mm for item in residual)}\n"
+                        f"  loop planarity = "
+                        f"{tuple(item.planarity_deviation_mm for item in residual)}\n"
+                        f"  nearest local surface = "
+                        f"{tuple(item.nearest_local_surface for item in residual)}\n"
+                        f"  patch triangles added = "
+                        f"{sum(item.triangle_count for item in residual)}\n"
+                        f"  open edges after = {part.after.open_edge_count}\n"
+                        f"  solid = {str(part.after.is_solid).lower()}\n"
+                    )
             FreeCAD.Console.PrintMessage(
                 f"{len(output_objects)} parts created.\n"
             )

@@ -132,6 +132,109 @@ class MeshPatchRebuilderTests(unittest.TestCase):
         self.assertEqual(patches, ())
         self.assertTrue(repaired.isSolid())
 
+    def test_v477_four_edge_residual_loop_is_closed_locally(self):
+        source = Part.makeBox(2.0, 2.0, 2.0)
+        original = (float(source.Volume), self._bounds(source))
+        complete = self._mesh(source)
+        top = {
+            index for index, facet in enumerate(complete.Facets)
+            if sum(point[2] for point in facet.Points) / 3.0 > 1.999
+        }
+        damaged = self._without_facets(complete, top)
+        before_points = tuple(
+            (
+                float(point.Vector.x),
+                float(point.Vector.y),
+                float(point.Vector.z),
+            )
+            for point in damaged.Points
+        )
+        self.assertEqual(mesh_metrics(damaged).open_edge_count, 4)
+        with patch.object(
+            MeshPatchRebuilder,
+            "_group_coplanar_cycles",
+            return_value=(),
+        ):
+            repaired, before, after, patches, added, vertices, movement = (
+                MeshPatchRebuilder().rebuild_mesh(damaged, source)
+            )
+        residual = tuple(
+            item for item in patches
+            if item.patch_type == "tiny_residual_loop"
+        )
+        self.assertEqual(before.open_edge_count, 4)
+        self.assertEqual(after.open_edge_count, 0)
+        self.assertEqual(after.non_manifold_edge_count, 0)
+        self.assertEqual(after.connected_component_count, 1)
+        self.assertTrue(after.is_solid)
+        self.assertEqual(len(residual), 1)
+        self.assertEqual(residual[0].boundary_edge_count, 4)
+        self.assertEqual(residual[0].triangle_count, 2)
+        self.assertEqual(added, 2)
+        self.assertEqual(vertices, 0)
+        self.assertEqual(movement, 0.0)
+        repaired_points = tuple(
+            (
+                float(point.Vector.x),
+                float(point.Vector.y),
+                float(point.Vector.z),
+            )
+            for point in repaired.Points
+        )
+        self.assertEqual(repaired_points, before_points)
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "residual.stl"
+            repaired.write(str(path))
+            reopened = Mesh.Mesh(str(path))
+            self.assertTrue(mesh_metrics(reopened).is_solid)
+        self.assertEqual((float(source.Volume), self._bounds(source)), original)
+
+    def test_v477_slightly_non_planar_quad_uses_existing_vertices(self):
+        source = Part.makeBox(2.0, 2.0, 2.0)
+        points = [
+            (0, 0, 0), (2, 0, 0), (2, 2, 0), (0, 2, 0),
+            (0, 0, 2), (2, 0, 2), (2, 2, 2.001), (0, 2, 2),
+        ]
+        facets = [
+            (0, 1, 5), (0, 5, 4), (1, 2, 6), (1, 6, 5),
+            (2, 3, 7), (2, 7, 6), (3, 0, 4), (3, 4, 7),
+            (0, 3, 2), (0, 2, 1),
+        ]
+        damaged = Mesh.Mesh((
+            [FreeCAD.Vector(*point) for point in points],
+            facets,
+        ))
+        repaired, observations, triangles = (
+            MeshPatchRebuilder()._close_residual_boundaries(damaged)
+        )
+        after = mesh_metrics(repaired)
+        self.assertEqual(triangles, 2)
+        self.assertEqual(len(observations), 1)
+        self.assertGreater(observations[0].planarity_deviation_mm, 0.0)
+        self.assertLessEqual(
+            observations[0].planarity_deviation_mm, 0.02
+        )
+        self.assertEqual(after.open_edge_count, 0)
+        self.assertEqual(after.non_manifold_edge_count, 0)
+        self.assertEqual(after.connected_component_count, 1)
+        self.assertTrue(after.is_solid)
+        self.assertEqual(repaired.CountPoints, damaged.CountPoints)
+
+    def test_v477_large_intentional_opening_is_not_capped(self):
+        source = Part.makeBox(12.0, 12.0, 2.0)
+        complete = self._mesh(source)
+        top = {
+            index for index, facet in enumerate(complete.Facets)
+            if sum(point[2] for point in facet.Points) / 3.0 > 1.999
+        }
+        opening = self._without_facets(complete, top)
+        before = mesh_metrics(opening)
+        with self.assertRaisesRegex(
+            SplitOperationError, "not a safe tiny patch"
+        ):
+            MeshPatchRebuilder()._close_residual_boundaries(opening)
+        self.assertEqual(mesh_metrics(opening), before)
+
     def test_exported_mesh_reopens_watertight(self):
         source = Part.makeBox(10.0, 8.0, 2.0)
         repaired, _before, after, *_ = MeshPatchRebuilder().rebuild(source)

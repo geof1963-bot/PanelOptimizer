@@ -28,6 +28,10 @@ MAXIMUM_VERTEX_MOVEMENT_MM = 0.02
 MESH_POINT_MATCH_TOLERANCE_MM = 1.0e-6
 MESH_BOUNDS_TOLERANCE_MM = LINEAR_DEFLECTION_MM
 MESH_VOLUME_RELATIVE_TOLERANCE = 0.005
+MAX_RESIDUAL_OPEN_EDGES = 8
+MAX_RESIDUAL_LOOP_PERIMETER_MM = 20.0
+MAX_RESIDUAL_LOOP_AREA_MM2 = 25.0
+MAX_RESIDUAL_PLANARITY_DEVIATION_MM = 0.02
 
 PART_NAMES = ("Part_1", "Part_2", "Part_3", "Part_4")
 QUADRANTS = ("lower_left", "lower_right", "upper_left", "upper_right")
@@ -78,6 +82,9 @@ class MeshPatchObservation:
     planarity_deviation_mm: float
     triangle_count: int
     area_mm2: float
+    boundary_endpoints_mm: tuple[tuple[float, float, float], ...] = ()
+    boundary_edge_lengths_mm: tuple[float, ...] = ()
+    nearest_local_surface: str = "adjacent mesh facets"
 
 
 @dataclass(frozen=True, slots=True)
@@ -330,6 +337,18 @@ class MeshPatchRebuilder:
         except Exception as error:
             raise SplitOperationError("Unable to assemble local mesh patches.") from error
         after = mesh_metrics(repaired)
+        residual_observations = ()
+        residual_triangles = 0
+        if (
+            0 < after.open_edge_count <= MAX_RESIDUAL_OPEN_EDGES
+            and after.non_manifold_edge_count == 0
+            and after.connected_component_count == 1
+        ):
+            repaired, residual_observations, residual_triangles = (
+                self._close_residual_boundaries(repaired, len(observations))
+            )
+            observations.extend(residual_observations)
+            after = mesh_metrics(repaired)
         self._validate_repaired(
             before,
             after,
@@ -341,9 +360,134 @@ class MeshPatchRebuilder:
             before,
             after,
             tuple(observations),
-            len(added),
+            len(added) + residual_triangles,
             len(mutable_points) - len(points),
             0.0,
+        )
+
+    def _close_residual_boundaries(self, mesh, patch_index_offset=0):
+        """Close only tiny residual cycles using their existing vertices."""
+        try:
+            import FreeCAD
+            import Mesh
+
+            points, facets, incidence, boundary = _mesh_topology(mesh)
+            cycles = _boundary_cycles(boundary)
+        except SplitOperationError:
+            raise
+        except Exception as error:
+            raise SplitOperationError(
+                "Unable to inspect residual mesh boundaries."
+            ) from error
+        if not cycles:
+            return mesh, (), 0
+
+        added = []
+        observations = []
+        for offset, cycle in enumerate(cycles, start=1):
+            centroid, normal, deviation = self._cycle_plane(
+                cycle, points, facets, incidence, mesh.Facets
+            )
+            oriented = self._oriented_cycle(cycle, facets, incidence)
+            perimeter = sum(
+                _length(_subtract(
+                    points[cycle[(index + 1) % len(cycle)]],
+                    points[cycle[index]],
+                ))
+                for index in range(len(cycle))
+            )
+            basis = self._plane_basis(normal)
+            polygon = tuple(
+                self._project(points[index], centroid, basis)
+                for index in cycle
+            )
+            area = abs(self._signed_area(polygon))
+            if (
+                len(cycle) > MAX_RESIDUAL_OPEN_EDGES
+                or perimeter > MAX_RESIDUAL_LOOP_PERIMETER_MM
+                or area > MAX_RESIDUAL_LOOP_AREA_MM2
+                or deviation > MAX_RESIDUAL_PLANARITY_DEVIATION_MM
+            ):
+                endpoints = tuple(points[index] for index in cycle)
+                lengths = tuple(
+                    _length(_subtract(
+                        points[cycle[(index + 1) % len(cycle)]],
+                        points[cycle[index]],
+                    ))
+                    for index in range(len(cycle))
+                )
+                raise SplitOperationError(
+                    "Residual mesh boundary is not a safe tiny patch: "
+                    f"edges={len(cycle)}, endpoints={endpoints}, "
+                    f"lengths={lengths}, perimeter={perimeter:.6f} mm, "
+                    f"area={area:.6f} mm^2, planarity="
+                    f"{deviation:.6f} mm."
+                )
+            triangles = self._minimal_cycle_triangles(oriented, points)
+            added.extend(triangles)
+            bounds = tuple(
+                min(points[index][axis] for index in cycle)
+                for axis in range(3)
+            ) + tuple(
+                max(points[index][axis] for index in cycle)
+                for axis in range(3)
+            )
+            observations.append(MeshPatchObservation(
+                patch_index=patch_index_offset + offset,
+                patch_type="tiny_residual_loop",
+                boundary_vertex_count=len(cycle),
+                boundary_edge_count=len(cycle),
+                inner_boundary_count=0,
+                boundary_perimeter_mm=perimeter,
+                bounds_mm=bounds,
+                average_z_mm=centroid[2],
+                normal=normal,
+                planarity_deviation_mm=deviation,
+                triangle_count=len(triangles),
+                area_mm2=sum(
+                    _triangle_area(points[a], points[b], points[c])
+                    for a, b, c in triangles
+                ),
+                boundary_endpoints_mm=tuple(points[index] for index in cycle),
+                boundary_edge_lengths_mm=tuple(
+                    _length(_subtract(
+                        points[cycle[(index + 1) % len(cycle)]],
+                        points[cycle[index]],
+                    ))
+                    for index in range(len(cycle))
+                ),
+                nearest_local_surface=(
+                    "adjacent mesh facets; normal "
+                    f"({normal[0]:.6f}, {normal[1]:.6f}, {normal[2]:.6f})"
+                ),
+            ))
+        repaired = Mesh.Mesh((
+            [FreeCAD.Vector(*point) for point in points],
+            list(facets + tuple(added)),
+        ))
+        repaired.harmonizeNormals()
+        return repaired, tuple(observations), len(added)
+
+    @staticmethod
+    def _minimal_cycle_triangles(cycle, points):
+        """Triangulate a tiny cycle without adding or moving vertices."""
+        if len(cycle) == 3:
+            return (tuple(cycle),)
+        if len(cycle) == 4:
+            first = _length(_subtract(points[cycle[0]], points[cycle[2]]))
+            second = _length(_subtract(points[cycle[1]], points[cycle[3]]))
+            if first <= second:
+                return (
+                    (cycle[0], cycle[1], cycle[2]),
+                    (cycle[0], cycle[2], cycle[3]),
+                )
+            return (
+                (cycle[1], cycle[2], cycle[3]),
+                (cycle[1], cycle[3], cycle[0]),
+            )
+        return tuple(
+            (cycle[0], cycle[index], cycle[index + 1])
+            for index in range(1, len(cycle) - 1)
         )
 
     @staticmethod

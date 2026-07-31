@@ -465,7 +465,7 @@ class SourceShapeResolutionTests(unittest.TestCase):
                 any("Automatic repair is disabled" in item for item in errors)
             )
             self.assertEqual(
-                messages, ["PanelOptimizer Split Pipeline V4.76\n"]
+                messages, ["PanelOptimizer Split Pipeline V4.77\n"]
             )
             self.assertEqual(warnings, [])
             after_shape = source.Shape

@@ -171,6 +171,12 @@ jointly determine whether secondary material is structural. Production logs
 record both bounding-box and effective footprints for every secondary
 component.
 
+V4.77 adds one bounded residual mesh-closure pass after the existing V4.26
+local reconstruction. It triangulates only closed loops of at most eight open
+edges with small perimeter and area, uses existing boundary vertices without
+smoothing, and retains the final manifold, component, solid, bounds, volume,
+and reopened-STL validations. Large intentional openings remain rejected.
+
 ---
 
 # Printing Constraints
