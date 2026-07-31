@@ -18,6 +18,7 @@ except ImportError:  # pragma: no cover
 from Commands.SplitPanelCommand import _progressive_four_part_split
 from Core.DowelPlanner import DowelPlanner
 from Core.ConnectivityRepair import (
+    RegionConnectivityDiagnosis,
     classify_region_components,
     diagnose_region_connectivity,
 )
@@ -274,6 +275,85 @@ class ConnectivityRegionRepairTests(unittest.TestCase):
         evidence = self._classify_secondary(island)
         self.assertAlmostEqual(evidence.volume_mm3, 1922.0, places=5)
         self.assertEqual(evidence.classification, "STRUCTURAL")
+
+    def test_exact_v475_sparse_fragments_are_non_structural(self):
+        seed = self._classify_secondary(
+            Part.makeBox(3.0, 4.0, 1.4, Vector(295.5, 80.0, 0.0))
+        )
+        main = replace(
+            seed,
+            rank=1,
+            volume_mm3=378_831.0,
+            thickness_mm=8.0,
+            volume_ratio=1.0,
+            classification="STRUCTURAL",
+        )
+        fragments = (
+            (82.781151, 1.400001, 1018.072151, 0.00021841, 59.129351),
+            (75.769892, 1.400001, 2031.973827, 0.00019991, 54.121313),
+        )
+        components = [main]
+        for rank, (volume, thickness, bbox_area, ratio, _area) in enumerate(
+            fragments, start=2
+        ):
+            components.append(replace(
+                seed,
+                rank=rank,
+                volume_mm3=volume,
+                thickness_mm=thickness,
+                footprint_mm2=bbox_area,
+                volume_ratio=ratio,
+                touches_panel_exterior=False,
+                silhouette_risk=False,
+            ))
+        diagnosis = classify_region_components(
+            RegionConnectivityDiagnosis(2, tuple(components)),
+            8.0,
+        )
+        for component, expected in zip(
+            diagnosis.components[1:], fragments
+        ):
+            self.assertAlmostEqual(
+                component.effective_footprint_mm2, expected[4], places=5
+            )
+            self.assertEqual(
+                component.classification, "NON_STRUCTURAL_SLIVER"
+            )
+            self.assertFalse(component.footprint_ok)
+
+    def test_exact_v475_region_profile_has_one_structural_component(self):
+        seed = self._classify_secondary(
+            Part.makeBox(3.0, 4.0, 1.4, Vector(295.5, 80.0, 0.0))
+        )
+        volumes = (
+            378_831.0,
+            82.781151,
+            75.769892,
+            0.431282,
+            0.121570,
+            0.051269,
+            0.002448,
+        )
+        components = []
+        for rank, volume in enumerate(volumes, start=1):
+            thickness = 8.0 if rank == 1 else 1.400001
+            components.append(replace(
+                seed,
+                rank=rank,
+                volume_mm3=volume,
+                thickness_mm=thickness,
+                footprint_mm2=2031.973827 if rank in (2, 3) else 1.0,
+                volume_ratio=1.0 if rank == 1 else volume / volumes[0],
+                touches_panel_exterior=False,
+                classification="STRUCTURAL",
+            ))
+        diagnosis = classify_region_components(
+            RegionConnectivityDiagnosis(2, tuple(components)),
+            8.0,
+        )
+        self.assertEqual(diagnosis.raw_solid_count, 7)
+        self.assertEqual(diagnosis.sliver_count, 6)
+        self.assertEqual(diagnosis.structural_count, 1)
 
     def test_small_volume_alone_is_insufficient(self):
         full_thickness = Part.makeBox(

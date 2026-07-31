@@ -161,8 +161,15 @@ evidence instead of the former immediate extraction error. Historical reserve
 routes and raw `solid_count == 4` acceptance are no longer used. Dowels, lips,
 mesh generation, and STL export begin only after all four region connectivity
 counts are exactly one. Normal command output starts with
-`PanelOptimizer Split Pipeline V4.75` and reports raw/sliver/structural counts
+`PanelOptimizer Split Pipeline V4.76` and reports raw/sliver/structural counts
 for every final region.
+
+V4.76 classifies shallow sparse fragments by effective material footprint
+(`volume / Z thickness`) instead of XY bounding-box extent. Volume ratio,
+thickness ratio, effective area, and original exterior/silhouette protection
+jointly determine whether secondary material is structural. Production logs
+record both bounding-box and effective footprints for every secondary
+component.
 
 ---
 

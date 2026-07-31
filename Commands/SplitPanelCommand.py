@@ -393,7 +393,7 @@ class PanelOptimizerSplitPanelCommand:
             return
 
         FreeCAD.Console.PrintMessage(
-            "PanelOptimizer Split Pipeline V4.75\n"
+            "PanelOptimizer Split Pipeline V4.76\n"
         )
 
         timings = {}
@@ -518,6 +518,25 @@ class PanelOptimizerSplitPanelCommand:
                         f"{island.nearest_seam}/"
                         f"{island.nearest_detour_id or island.nearest_segment_id}, "
                         f"opening {island.opening_distance_mm:.3f} mm\n"
+                    )
+            FreeCAD.Console.PrintMessage(
+                "Production component classification evidence:\n"
+            )
+            for diagnosis in macro_result.region_component_diagnostics:
+                for component in diagnosis.components[1:]:
+                    FreeCAD.Console.PrintMessage(
+                        f"  Region_{diagnosis.region_index} component "
+                        f"{component.rank}: volume = "
+                        f"{component.volume_mm3:.6f} mm^3, volume ratio = "
+                        f"{component.volume_ratio:.8f}, z thickness = "
+                        f"{component.thickness_mm:.6f} mm, thickness ratio = "
+                        f"{component.thickness_ratio:.8f}, bbox footprint = "
+                        f"{component.footprint_mm2:.6f} mm^2, effective "
+                        f"footprint = {component.effective_footprint_mm2:.6f} "
+                        f"mm^2, original exterior contact = "
+                        f"{component.touches_panel_exterior}, silhouette risk "
+                        f"= {component.silhouette_risk}, classification = "
+                        f"{component.classification}\n"
                     )
             for history in macro_result.connectivity_repair_history:
                 FreeCAD.Console.PrintMessage(

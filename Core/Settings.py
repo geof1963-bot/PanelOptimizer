@@ -109,13 +109,13 @@ class SplitSettings:
     MAX_CONNECTIVITY_REPAIR_TIME_S: float = 30.0
     CONNECTIVITY_REPAIR_WINDOW_MM: float = 40.0
 
-    # V4.74C conservative ownership-fragment classification.  Every scalar
-    # limit must pass together; none of these values is sufficient alone.
+    # V4.76 physical ownership-fragment classification.  Bounding-box area is
+    # diagnostic only: sparse curved fragments can occupy a very large box.
     MAX_SLIVER_VOLUME_MM3: float = 50.0
-    MAX_SLIVER_VOLUME_RATIO: float = 0.0002
+    MAX_SLIVER_VOLUME_RATIO: float = 0.00025
     MAX_SLIVER_THICKNESS_RATIO: float = 0.30
-    # This is a bounding-box footprint, not occupied area. Thin curved B-rep
-    # fragments can therefore have sparse boxes much larger than volume/Z.
+    MAX_SLIVER_EFFECTIVE_FOOTPRINT_MM2: float = 75.0
+    # Retained for backward-compatible diagnostics; not a classifier input.
     MAX_SLIVER_FOOTPRINT_MM2: float = 300.0
     MAX_SLIVER_BOUNDARY_DISTANCE_MM: float = 2.5
     MAX_SPARSE_CRUMB_VOLUME_MM3: float = 1.0

@@ -48,6 +48,9 @@ class ComponentConnectivityObservation:
     opening_proximity_ok: bool = False
     silhouette_risk: bool = False
     full_thickness: bool = False
+    thickness_ratio: float = 0.0
+    effective_footprint_mm2: float = 0.0
+    effective_footprint_ok: bool = False
 
     @property
     def is_structural(self) -> bool:
@@ -139,8 +142,10 @@ class RegionConnectivityDiagnosis:
                 f"nearest detour "
                 f"{component.nearest_detour_id or 'none'}; opening distance "
                 f"{component.opening_distance_mm:.6f} mm; footprint "
-                f"{component.footprint_mm2:.6f} mm^2; thickness "
-                f"{component.thickness_mm:.6f} mm; volume ratio "
+                f"{component.footprint_mm2:.6f} mm^2; effective footprint "
+                f"{component.effective_footprint_mm2:.6f} mm^2; thickness "
+                f"{component.thickness_mm:.6f} mm; thickness ratio "
+                f"{component.thickness_ratio:.8f}; volume ratio "
                 f"{component.volume_ratio:.8f}; volume_ok "
                 f"{component.volume_ok}; ratio_ok "
                 f"{component.volume_ratio_ok}; thickness_ok "
@@ -242,10 +247,9 @@ def diagnose_region_connectivity(
 def classify_region_components(diagnosis, panel_thickness_mm):
     """Classify secondary solids using combined conservative evidence.
 
-    A fragment is ignored only when it is small in absolute and relative
-    volume, shallow, small in XY, and does not touch the original panel's
-    outer silhouette. Seam, artistic-opening, and region-tool proximity are
-    diagnostic context only. The main component is always structural.
+    Shallow fragments are evaluated by actual material density: volume divided
+    by Z thickness. Bounding-box footprint and absolute volume are diagnostics,
+    not structural vetoes. The main component is always structural.
     """
     classified = []
     for component in diagnosis.components:
@@ -264,6 +268,13 @@ def classify_region_components(diagnosis, panel_thickness_mm):
         footprint_ok = (
             component.footprint_mm2 <= Settings.Split.MAX_SLIVER_FOOTPRINT_MM2
         )
+        effective_footprint = component.volume_mm3 / max(
+            component.thickness_mm, 1.0e-12
+        )
+        effective_footprint_ok = (
+            effective_footprint
+            <= Settings.Split.MAX_SLIVER_EFFECTIVE_FOOTPRINT_MM2
+        )
         opening_proximity_ok = (
             component.opening_distance_mm
             <= Settings.Split.MAX_SLIVER_BOUNDARY_DISTANCE_MM
@@ -275,15 +286,15 @@ def classify_region_components(diagnosis, panel_thickness_mm):
             <= Settings.Split.MAX_SPARSE_CRUMB_VOLUME_MM3
             and component.volume_ratio
             <= Settings.Split.MAX_SPARSE_CRUMB_VOLUME_RATIO
-            and component.footprint_mm2
+            and effective_footprint
             <= Settings.Split.MAX_SPARSE_CRUMB_FOOTPRINT_MM2
+            and not full_thickness
         )
         is_sliver = (
             component.rank > 1
-            and volume_ok
             and ratio_ok
-            and footprint_ok
             and (thickness_ok or sparse_cutter_crumb)
+            and effective_footprint_ok
             and not silhouette_risk
         )
         classified.append(replace(
@@ -301,6 +312,9 @@ def classify_region_components(diagnosis, panel_thickness_mm):
             opening_proximity_ok=opening_proximity_ok,
             silhouette_risk=silhouette_risk,
             full_thickness=full_thickness,
+            thickness_ratio=thickness_ratio,
+            effective_footprint_mm2=effective_footprint,
+            effective_footprint_ok=effective_footprint_ok,
         ))
     return replace(diagnosis, components=tuple(classified))
 
