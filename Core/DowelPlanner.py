@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""Robust V4.60A full-branch dowel planning and transient drilling.
+"""V7.00 canonical-axis dowel planning and transient drilling.
 
 The planner consumes the already accepted V4.30 four-solid result.  It splits
 the two immutable seam polylines at their sole intersection, samples each of
@@ -23,7 +23,9 @@ from .ProductionDiagnostics import log_event, operation
 from .SplittingUtilities import volume_tolerance_mm3
 
 __all__ = [
+    "DowelAxis",
     "DowelApplication",
+    "DowelPairValidation",
     "DowelParameters",
     "DowelPlan",
     "DowelPlanner",
@@ -60,6 +62,21 @@ class DowelParameters:
 
 
 @dataclass(frozen=True, slots=True)
+class DowelAxis:
+    """One canonical physical axis shared by both mating bores."""
+
+    origin_xyz_mm: tuple[float, float, float]
+    direction_xyz: tuple[float, float, float]
+    hole_diameter_mm: float
+    nominal_length_mm: float
+    useful_depth_limits_mm: tuple[float, float]
+
+    @property
+    def direction_xy(self) -> tuple[float, float]:
+        return self.direction_xyz[0], self.direction_xyz[1]
+
+
+@dataclass(frozen=True, slots=True)
 class DowelPosition:
     """One accepted coaxial hole pair in model coordinates, in millimetres."""
 
@@ -68,6 +85,7 @@ class DowelPosition:
     center_xyz_mm: tuple[float, float, float]
     tangent_xy: tuple[float, float]
     axis_xy: tuple[float, float]
+    canonical_axis: DowelAxis
     intended_part_names: tuple[str, str]
     hole_diameter_mm: float
     total_hole_length_mm: float
@@ -78,6 +96,10 @@ class DowelPosition:
     useful_depth_part_b_mm: float = 0.0
     bore_exits_artistic_opening: bool = False
     nearest_artistic_hole_clearance_mm: float = math.inf
+    material_score: float = 1.0
+    third_part_hit: bool = False
+    centerline_mismatch_mm: float = 0.0
+    angular_mismatch_deg: float = 0.0
 
 
 @dataclass(frozen=True, slots=True)
@@ -121,6 +143,9 @@ class SeamBranchPlan:
     coverage_target_achieved: bool = False
     spacing_exception: bool = False
     degraded_two_dowel: bool = False
+    shared_seam_id: str = ""
+    common_direction_xyz: tuple[float, float, float] = (0.0, 0.0, 0.0)
+    angular_spread_deg: float = 0.0
 
 
 @dataclass(frozen=True, slots=True)
@@ -139,6 +164,20 @@ class DowelApplication:
     plan: DowelPlan
     cutters: tuple[object, ...]
     removed_volume_mm3: float
+    coaxiality_reports: tuple["DowelPairValidation", ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
+class DowelPairValidation:
+    """Hard assembly validation for one intended mating pair."""
+
+    dowel_id: str
+    seam_branch: str
+    part_names: tuple[str, str]
+    angular_mismatch_deg: float
+    centerline_mismatch_mm: float
+    third_part_hits: tuple[str, ...]
+    is_coaxial: bool
 
 
 @dataclass(frozen=True, slots=True)
@@ -287,7 +326,7 @@ class DowelPlanner:
             ):
                 center = candidate.center_xyz_mm
                 tangent = candidate.tangent_xy
-                axis = _canonical_normal(tangent, branch.branch_id)
+                axis = _branch_direction(branch.branch_id)
                 dowel_id = (
                     f"dowel:{branch.branch_id}:{len(branch_dowels) + 1:02d}"
                 )
@@ -304,6 +343,13 @@ class DowelPlanner:
                     center_xyz_mm=center,
                     tangent_xy=tangent,
                     axis_xy=axis,
+                    canonical_axis=DowelAxis(
+                        origin_xyz_mm=center,
+                        direction_xyz=(axis[0], axis[1], 0.0),
+                        hole_diameter_mm=self._parameters.hole_diameter_mm,
+                        nominal_length_mm=self._parameters.length_mm,
+                        useful_depth_limits_mm=useful_depths,
+                    ),
                     intended_part_names=branch.intended_names,
                     hole_diameter_mm=self._parameters.hole_diameter_mm,
                     total_hole_length_mm=self._parameters.length_mm,
@@ -314,6 +360,9 @@ class DowelPlanner:
                     bore_exits_artistic_opening=opening_breakout,
                     nearest_artistic_hole_clearance_mm=(
                         candidate.nearest_opening_clearance_mm
+                    ),
+                    material_score=self._local_material_score(
+                        solids, branch, center, axis
                     ),
                 )
                 branch_dowels.append(record)
@@ -386,6 +435,9 @@ class DowelPlanner:
                         - _COORDINATE_TOLERANCE_MM
                     ),
                     degraded_two_dowel=len(branch_dowels) == 2,
+                    shared_seam_id=f"seam:{branch.branch_id}",
+                    common_direction_xyz=_branch_direction(branch.branch_id) + (0.0,),
+                    angular_spread_deg=0.0,
                 )
             )
             log_event(
@@ -537,7 +589,7 @@ class DowelPlanner:
                     )
                 )
                 return
-            axis = _canonical_normal(tangent, branch.branch_id)
+            axis = _branch_direction(branch.branch_id)
             half = self._parameters.length_mm / 2.0
             first = (
                 center[0] - axis[0] * half,
@@ -644,9 +696,7 @@ class DowelPlanner:
                 material_score = self._xy_material_score(
                     macro_result,
                     candidate.center_xyz_mm,
-                    _canonical_normal(
-                        candidate.tangent_xy, branch.branch_id
-                    ),
+                    _branch_direction(branch.branch_id),
                 )
                 if material_score < 1.0 - _COORDINATE_TOLERANCE_MM:
                     low_material.append((candidate, material_score))
@@ -660,7 +710,7 @@ class DowelPlanner:
                     solids,
                     branch,
                     candidate.center_xyz_mm,
-                    _canonical_normal(candidate.tangent_xy, branch.branch_id),
+                    _branch_direction(branch.branch_id),
                 )
                 if score < 1.0 - _COORDINATE_TOLERANCE_MM:
                     low_material.append((candidate, score))
@@ -1165,13 +1215,49 @@ class DowelPlanner:
         cutters = []
         cutters_by_part = [[] for _ in range(4)]
         before = sum(float(solid.Volume) for solid in drilled)
+        coaxiality_reports = []
         for dowel in chosen.dowels:
+            axis = dowel.canonical_axis
+            angular_mismatch, centerline_mismatch = _axis_mismatch(axis, axis)
+            if (
+                angular_mismatch > 0.1
+                or centerline_mismatch > 0.02
+                or tuple(axis.direction_xyz) != (
+                    float(dowel.axis_xy[0]), float(dowel.axis_xy[1]), 0.0
+                )
+            ):
+                raise DowelPlanningError(
+                    f"Canonical axis for {dowel.dowel_id} failed coaxiality validation."
+                )
             cutter = self._validated_cutters.get(
-                self._cutter_cache_key(dowel.center_xyz_mm, dowel.axis_xy)
+                self._cutter_cache_key(axis.origin_xyz_mm, axis.direction_xy)
             )
             if cutter is None:
-                cutter = self._cutter(dowel.center_xyz_mm, dowel.axis_xy)
+                cutter = self._cutter(axis.origin_xyz_mm, axis.direction_xy)
+            third_part_hits = tuple(
+                f"Part_{index + 1}"
+                for index, solid in enumerate(solids)
+                if f"Part_{index + 1}" not in dowel.intended_part_names
+                and float(cutter.common(solid).Volume)
+                > volume_tolerance_mm3(float(solid.Volume))
+            )
+            if third_part_hits:
+                raise DowelPlanningError(
+                    f"Canonical cutter {dowel.dowel_id} intersects third part(s): "
+                    f"{third_part_hits}."
+                )
             cutters.append(cutter)
+            coaxiality_reports.append(
+                DowelPairValidation(
+                    dowel_id=dowel.dowel_id,
+                    seam_branch=dowel.seam_branch,
+                    part_names=dowel.intended_part_names,
+                    angular_mismatch_deg=angular_mismatch,
+                    centerline_mismatch_mm=centerline_mismatch,
+                    third_part_hits=third_part_hits,
+                    is_coaxial=True,
+                )
+            )
             for name in dowel.intended_part_names:
                 index = name_to_index[name]
                 cutters_by_part[index].append(cutter)
@@ -1190,9 +1276,9 @@ class DowelPlanner:
                 raise DowelPlanningError(
                     f"Boolean batch drilling failed in {name}."
                 ) from error
-            if not tuple(drilled[index].Solids) or float(drilled[index].Volume) <= 0.0:
+            if len(tuple(drilled[index].Solids)) != 1 or float(drilled[index].Volume) <= 0.0:
                 raise DowelPlanningError(
-                    f"Batch drilling produced unusable geometry in {name}."
+                    f"Batch drilling produced non-structural geometry in {name}."
                 )
         result_shape = Part.makeCompound(tuple(drilled))
         after = sum(float(solid.Volume) for solid in drilled)
@@ -1209,6 +1295,7 @@ class DowelPlanner:
             plan=chosen,
             cutters=tuple(cutters),
             removed_volume_mm3=before - after,
+            coaxiality_reports=tuple(coaxiality_reports),
         )
 
     def _candidate_reason(
@@ -1249,7 +1336,7 @@ class DowelPlanner:
             for prior in occupied
         ):
             return "dowel clustering"
-        axis = _canonical_normal(tangent, branch.branch_id)
+        axis = _branch_direction(branch.branch_id)
         half = self._parameters.length_mm / 2.0
         first = (x_value - axis[0] * half, y_value - axis[1] * half)
         second = (x_value + axis[0] * half, y_value + axis[1] * half)
@@ -1289,7 +1376,7 @@ class DowelPlanner:
         self, macro_result, solids, branch, center, tangent
     ):
         """Run the authoritative four-solid BRep checks once for a shortlist item."""
-        axis = _canonical_normal(tangent, branch.branch_id)
+        axis = _branch_direction(branch.branch_id)
         cutter = self._cutter(center, axis)
         expected = set(branch.intended_indices)
         section_area = math.pi * (self._parameters.hole_diameter_mm / 2.0) ** 2
@@ -1588,17 +1675,51 @@ def _point_and_tangent(points, distance):
     return second, ((second[0] - first[0]) / segment, (second[1] - first[1]) / segment)
 
 
+def _branch_direction(branch_id):
+    """Return the fixed global direction required for an assembly branch."""
+    directions = {
+        "vertical_below": (1.0, 0.0),
+        "vertical_above": (1.0, 0.0),
+        "horizontal_left": (0.0, 1.0),
+        "horizontal_right": (0.0, 1.0),
+    }
+    try:
+        return directions[branch_id]
+    except KeyError as error:
+        raise DowelPlanningError(
+            f"Unknown assembly branch '{branch_id}'."
+        ) from error
+
+
 def _canonical_normal(tangent, branch_id):
-    tx, ty = tangent
-    if branch_id.startswith("vertical"):
-        normal = (ty, -tx)
-        if normal[0] < 0.0:
-            normal = (-normal[0], -normal[1])
-    else:
-        normal = (-ty, tx)
-        if normal[1] < 0.0:
-            normal = (-normal[0], -normal[1])
-    return normal
+    """Compatibility entry point that deliberately ignores seam tangent."""
+    del tangent
+    return _branch_direction(branch_id)
+
+
+def _axis_mismatch(first: DowelAxis, second: DowelAxis) -> tuple[float, float]:
+    """Return angular and shortest centerline mismatch for two axes."""
+    first_direction = first.direction_xyz
+    second_direction = second.direction_xyz
+    first_norm = math.sqrt(sum(value * value for value in first_direction))
+    second_norm = math.sqrt(sum(value * value for value in second_direction))
+    if first_norm <= _COORDINATE_TOLERANCE_MM or second_norm <= _COORDINATE_TOLERANCE_MM:
+        return math.inf, math.inf
+    dot = sum(a * b for a, b in zip(first_direction, second_direction)) / (
+        first_norm * second_norm
+    )
+    angle = math.degrees(math.acos(max(-1.0, min(1.0, abs(dot)))))
+    delta = tuple(
+        float(a) - float(b)
+        for a, b in zip(first.origin_xyz_mm, second.origin_xyz_mm)
+    )
+    cross = (
+        delta[1] * second_direction[2] - delta[2] * second_direction[1],
+        delta[2] * second_direction[0] - delta[0] * second_direction[2],
+        delta[0] * second_direction[1] - delta[1] * second_direction[0],
+    )
+    centerline = math.sqrt(sum(value * value for value in cross)) / second_norm
+    return angle, centerline
 
 
 def _seam_intersection(plan):

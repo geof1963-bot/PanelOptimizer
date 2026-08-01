@@ -250,7 +250,7 @@ class DowelPlannerTests(unittest.TestCase):
         self.assertTrue(all(abs(item.axis_xy[0]) == 1.0 for item in vertical))
         self.assertTrue(all(abs(item.axis_xy[1]) == 1.0 for item in horizontal))
 
-    def test_sinuous_segment_uses_its_local_xy_normal(self):
+    def test_sinuous_segment_uses_fixed_branch_direction(self):
         vertical = SeamPath2D(
             "vertical", 150.0,
             (Point2D(150.0, 0.0), Point2D(150.0, 300.0)),
@@ -277,12 +277,12 @@ class DowelPlannerTests(unittest.TestCase):
         )
         self.assertTrue(curved)
         for item in curved:
-            self.assertAlmostEqual(
-                item.tangent_xy[0] * item.axis_xy[0]
-                + item.tangent_xy[1] * item.axis_xy[1],
-                0.0,
-                places=12,
+            expected = (
+                (1.0, 0.0)
+                if item.seam_branch.startswith("vertical")
+                else (0.0, 1.0)
             )
+            self.assertEqual(item.axis_xy, expected)
 
     def test_center_and_outer_edge_exclusions_are_respected(self):
         macro = self._macro(Part.makeBox(300.0, 300.0, 8.0))

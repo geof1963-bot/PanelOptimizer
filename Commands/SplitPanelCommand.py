@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""FreeCAD GUI command for the V4.50 lipped, dowelled four-STL workflow."""
+"""FreeCAD GUI command for the V7.00 clean, lipped four-STL workflow."""
 
 from __future__ import annotations
 
@@ -410,13 +410,13 @@ class PanelOptimizerSplitPanelCommand:
             return False
 
     def Activated(self):
-        """Run the instrumented V5.10 Split Panel production pipeline."""
+        """Run the V7.00 clean-part and canonical-axis production pipeline."""
         if self._running:
             self._error("PanelOptimizer: Split Panel already running.")
             return
         self._running = True
         self._last_run_evidence = None
-        start_run("PanelOptimizer Split Panel V5.10")
+        start_run("PanelOptimizer Split Panel V7.00")
         document = FreeCAD.ActiveDocument
         if document is None:
             self._error("PanelOptimizer: no active document.")
@@ -425,7 +425,7 @@ class PanelOptimizerSplitPanelCommand:
             return
 
         FreeCAD.Console.PrintMessage(
-            "PanelOptimizer Split Pipeline V5.10\n"
+            "PanelOptimizer Split Pipeline V7.00\n"
         )
 
         timings = {}
@@ -560,6 +560,7 @@ class PanelOptimizerSplitPanelCommand:
             )
             self._write_dowel_preview(
                 document,
+                dowel_application.plan,
                 dowel_application.cutters,
                 recompute=False,
             )
@@ -793,6 +794,15 @@ class PanelOptimizerSplitPanelCommand:
                     f"exception {branch.spacing_exception}, degraded two-dowel "
                     f"{branch.degraded_two_dowel}\n"
                 )
+            for validation in dowel_application.coaxiality_reports:
+                FreeCAD.Console.PrintMessage(
+                    f"{validation.dowel_id}: shared seam seam:{validation.seam_branch}, "
+                    f"parts {validation.part_names}, angular mismatch "
+                    f"{validation.angular_mismatch_deg:.6f} deg, centerline "
+                    f"mismatch {validation.centerline_mismatch_mm:.6f} mm, "
+                    f"third-part hits {validation.third_part_hits}, "
+                    f"coaxial {validation.is_coaxial}\n"
+                )
             for report in lip_application.reports:
                 FreeCAD.Console.PrintMessage(
                     f"{report.name} lips: {report.total_length_mm:.3f} mm, "
@@ -879,6 +889,7 @@ class PanelOptimizerSplitPanelCommand:
             self._last_run_evidence = {
                 "seam_plan": macro_result.seam_plan,
                 "dowel_plan": dowel_application.plan,
+                "coaxiality_reports": dowel_application.coaxiality_reports,
                 "lip_reports": lip_application.reports,
                 "mesh_parts": tuple(mesh_parts),
                 "stl_artifacts": tuple(artifacts),
@@ -919,6 +930,11 @@ class PanelOptimizerSplitPanelCommand:
         for name in (
             "PanelOptimizer_VerticalSeam",
             "PanelOptimizer_HorizontalSeam",
+            "PanelOptimizer_Dowels",
+            "PanelOptimizer_DowelAxes_vertical_below",
+            "PanelOptimizer_DowelAxes_vertical_above",
+            "PanelOptimizer_DowelAxes_horizontal_left",
+            "PanelOptimizer_DowelAxes_horizontal_right",
         ):
             output = document.getObject(name)
             if output is not None and (
@@ -988,8 +1004,8 @@ class PanelOptimizerSplitPanelCommand:
         return tuple(previews)
 
     @staticmethod
-    def _write_dowel_preview(document, cutters, recompute=True) -> object:
-        """Create or update one owned lightweight compound of planned holes."""
+    def _write_dowel_preview(document, plan, cutters, recompute=True) -> object:
+        """Create aggregate and per-branch canonical-axis previews."""
         import Part
 
         name = "PanelOptimizer_Dowels"
@@ -1016,13 +1032,39 @@ class PanelOptimizerSplitPanelCommand:
         if view is not None:
             view.ShapeColor = (0.95, 0.65, 0.10)
             view.Transparency = 65
+        by_branch = {}
+        for dowel, cutter in zip(plan.dowels, cutters):
+            by_branch.setdefault(dowel.seam_branch, []).append(cutter.copy())
+        for branch in (
+            "vertical_below", "vertical_above",
+            "horizontal_left", "horizontal_right",
+        ):
+            branch_name = f"PanelOptimizer_DowelAxes_{branch}"
+            branch_output = document.getObject(branch_name)
+            if branch_output is None:
+                branch_output = document.addObject("Part::Feature", branch_name)
+                branch_output.addProperty(
+                    "App::PropertyString", "PanelOptimizerRole", "PanelOptimizer"
+                )
+                branch_output.PanelOptimizerRole = "PanelOptimizer.DowelAxesPreview.v7"
+                branch_output.setEditorMode("PanelOptimizerRole", 1)
+            elif branch_output.PanelOptimizerRole != "PanelOptimizer.DowelAxesPreview.v7":
+                raise PanelOptimizerError(
+                    f"Existing object '{branch_name}' is not an owned axis preview."
+                )
+            branch_output.Shape = Part.makeCompound(tuple(by_branch.get(branch, ())))
+            branch_output.Label = branch_name
+            branch_view = getattr(branch_output, "ViewObject", None)
+            if branch_view is not None:
+                branch_view.ShapeColor = (0.25, 0.85, 0.95)
+                branch_view.Transparency = 45
         if recompute:
             document.recompute()
         return output
 
     @staticmethod
     def _write_lip_preview(document, preview_shape, recompute=True) -> object:
-        """Create or update the owned lightweight V4.50 lip compound."""
+        """Create or update the owned lightweight V7 lip compound."""
         name = "PanelOptimizer_Lips"
         output = document.getObject(name)
         if output is None:
@@ -1053,9 +1095,9 @@ class PanelOptimizerSplitPanelCommand:
 
     @staticmethod
     def _print_performance(timings) -> None:
-        """Print one concise V5.10 stage report in seconds."""
+        """Print one concise V6.00 stage report in seconds."""
         FreeCAD.Console.PrintMessage(
-            "PanelOptimizer Performance V5.10\n"
+            "PanelOptimizer Performance V7.00\n"
             f"Contour prep + route search: {timings.get('seams', 0.0):.3f} s\n"
             f"  contour extraction: {timings.get('contour_prep_seconds', 0.0):.3f} s\n"
             f"  route generation: {timings.get('route_search_seconds', 0.0):.3f} s\n"

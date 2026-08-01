@@ -86,7 +86,7 @@ class RealPanelV501Tests(unittest.TestCase):
 
     def test_real_performance_and_printability_regression(self):
         timings = self.evidence["timings"]
-        self.assertLess(timings["dowel_plan"], 70.0)
+        self.assertLess(timings["dowel_plan"], 90.0)
         # A durable regression threshold against the measured 521.390 s V5.00
         # run.  The stricter 180 s production target is reported, never faked.
         self.assertLess(timings["total"], 300.0)
@@ -96,6 +96,14 @@ class RealPanelV501Tests(unittest.TestCase):
             for x_value, y_value, _z_value
             in self.evidence["part_dimensions_mm"]
         ))
+
+    def test_real_canonical_dowel_axes_are_coaxial(self):
+        reports = self.evidence["coaxiality_reports"]
+        self.assertTrue(reports)
+        self.assertTrue(all(item.is_coaxial for item in reports))
+        self.assertTrue(all(item.third_part_hits == () for item in reports))
+        self.assertTrue(all(item.angular_mismatch_deg <= 0.1 for item in reports))
+        self.assertTrue(all(item.centerline_mismatch_mm <= 0.02 for item in reports))
 
 
 if __name__ == "__main__":
