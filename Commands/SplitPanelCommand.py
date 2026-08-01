@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""FreeCAD GUI command for the V7.00 clean, lipped four-STL workflow."""
+"""FreeCAD GUI command for the V7.10 continuous-seam four-STL workflow."""
 
 from __future__ import annotations
 
@@ -32,6 +32,7 @@ from Core.ProductionDiagnostics import (
     start_run,
 )
 from Core.Settings import Settings
+from Core.SeamQuality import inspect_seam_walls
 from Core.SinuousSeamPath import SinuousSeamPathFinder
 from Core.SplitWorkflow import SplitDocumentWriter, validate_single_selection
 
@@ -410,13 +411,13 @@ class PanelOptimizerSplitPanelCommand:
             return False
 
     def Activated(self):
-        """Run the V7.00 clean-part and canonical-axis production pipeline."""
+        """Run the V7.10 continuous-seam production pipeline."""
         if self._running:
             self._error("PanelOptimizer: Split Panel already running.")
             return
         self._running = True
         self._last_run_evidence = None
-        start_run("PanelOptimizer Split Panel V7.00")
+        start_run("PanelOptimizer Split Panel V7.10")
         document = FreeCAD.ActiveDocument
         if document is None:
             self._error("PanelOptimizer: no active document.")
@@ -425,7 +426,7 @@ class PanelOptimizerSplitPanelCommand:
             return
 
         FreeCAD.Console.PrintMessage(
-            "PanelOptimizer Split Pipeline V7.00\n"
+            "PanelOptimizer Split Pipeline V7.10\n"
         )
 
         timings = {}
@@ -902,6 +903,10 @@ class PanelOptimizerSplitPanelCommand:
                     )
                     for solid in macro_result.shape.Solids
                 ),
+                "seam_wall_quality": tuple(
+                    inspect_seam_walls(solid)
+                    for solid in macro_result.shape.Solids
+                ),
             }
             FreeCAD.Console.PrintMessage(
                 f"{len(artifacts)} STL files exported.\n"
@@ -1097,7 +1102,7 @@ class PanelOptimizerSplitPanelCommand:
     def _print_performance(timings) -> None:
         """Print one concise V6.00 stage report in seconds."""
         FreeCAD.Console.PrintMessage(
-            "PanelOptimizer Performance V7.00\n"
+            "PanelOptimizer Performance V7.10\n"
             f"Contour prep + route search: {timings.get('seams', 0.0):.3f} s\n"
             f"  contour extraction: {timings.get('contour_prep_seconds', 0.0):.3f} s\n"
             f"  route generation: {timings.get('route_search_seconds', 0.0):.3f} s\n"

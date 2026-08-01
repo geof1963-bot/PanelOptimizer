@@ -228,9 +228,9 @@ class MacroPartExtractor:
     ) -> PrintablePart:
         """Create one immutable part record using only configured X/Y limits."""
         bounds = shape.BoundBox
-        size_x = float(bounds.XLength)
-        size_y = float(bounds.YLength)
-        size_z = float(bounds.ZLength)
+        size_x = round(float(bounds.XLength), 9)
+        size_y = round(float(bounds.YLength), 9)
+        size_z = round(float(bounds.ZLength), 9)
         # Neutralize only kernel-coordinate noise so mathematical equality
         # passes; this geometry tolerance is not a printable allowance.
         within_x = (

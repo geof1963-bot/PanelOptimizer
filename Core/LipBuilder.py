@@ -101,9 +101,6 @@ class LipBuilder:
         except Exception as error:
             raise LipBuildError("Unable to construct seam-offset lip solids.") from error
 
-        # The exclusion box is shared by all four part masks. Cut it from
-        # each batched rib once, then reuse those exact transient shapes for
-        # the four material-side commons below.
         prepared_candidates = []
         for candidate, ideal_volume in candidates:
             try:
@@ -247,29 +244,19 @@ class LipBuilder:
                         Vector(cx2 + nx * half, cy2 + ny * half, base_z),
                         Vector(cx2 - nx * half, cy2 - ny * half, base_z),
                     )
-                    wire = Part.makePolygon((*corners, corners[0]))
+                    wire = Part.makePolygon(corners + (corners[0],))
                     rib = Part.Face(Part.Wire(wire.Edges)).extrude(
-                        Vector(
-                            0.0,
-                            0.0,
-                            self._parameters.height_mm + _FUSION_OVERLAP_MM,
-                        )
+                        Vector(0.0, 0.0, self._parameters.height_mm + _FUSION_OVERLAP_MM)
                     )
                     pieces.append((rib, float(rib.Volume)))
         if not pieces:
             raise LipBuildError("Accepted seam plan contains no lip segments.")
-        # Union small deterministic batches before per-part mask clipping.
-        # This preserves the exact rib union while avoiding one expensive
-        # common/cut boolean for every sampled curve segment and every part.
         batched = []
         batch_size = 64
         for start in range(0, len(pieces), batch_size):
             shapes = tuple(item[0] for item in pieces[start:start + batch_size])
             try:
-                shape = (
-                    shapes[0].multiFuse(shapes[1:])
-                    if len(shapes) > 1 else shapes[0]
-                )
+                shape = shapes[0].multiFuse(shapes[1:]) if len(shapes) > 1 else shapes[0]
                 try:
                     shape = shape.removeSplitter()
                 except Exception:
@@ -278,6 +265,25 @@ class LipBuilder:
                 raise LipBuildError("Unable to batch curved lip segments.") from error
             batched.append((shape, float(shape.Volume)))
         return tuple(batched)
+
+    @staticmethod
+    def _clean_lip_points(path):
+        """Remove duplicate and near-collinear stations from a seam route."""
+        points = []
+        for point in path.points:
+            value = (float(point.x_mm), float(point.y_mm))
+            if not points or math.dist(value, points[-1]) > _EPSILON_MM:
+                points.append(value)
+        if len(points) < 2:
+            raise LipBuildError("Accepted seam path contains too few points.")
+        result = [points[0]]
+        for index in range(1, len(points) - 1):
+            first = (points[index][0] - result[-1][0], points[index][1] - result[-1][1])
+            second = (points[index + 1][0] - points[index][0], points[index + 1][1] - points[index][1])
+            if abs(first[0] * second[1] - first[1] * second[0]) > 1.0e-5:
+                result.append(points[index])
+        result.append(points[-1])
+        return tuple(result)
 
     @staticmethod
     def _bbox_overlaps_xy(first, second):
@@ -293,10 +299,10 @@ class LipBuilder:
         """Extrude only coplanar ZMax faces, preserving openings and panel edges."""
         top_faces = []
         for face in solid.Faces:
-            vertices = tuple(face.Vertexes)
-            if vertices and all(
-                abs(float(vertex.Point.z) - zmax) <= _EPSILON_MM
-                for vertex in vertices
+            face_box = face.BoundBox
+            if (
+                float(face_box.ZMin) >= zmax - 1.0e-3
+                and float(face_box.ZLength) <= 1.0e-3
             ):
                 top_face = face.copy()
                 top_face.translate(Vector(0.0, 0.0, -_FUSION_OVERLAP_MM))

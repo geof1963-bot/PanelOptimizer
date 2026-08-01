@@ -195,26 +195,30 @@ class MacroSplitCore:
                 )
             else:
                 self._validate_seam_plan(seam_plan, cut_x, cut_y)
-                surface_vertical_cutter = self._segmented_path_cutter(
+                surface_vertical_cutter = self._continuous_path_cutter(
                     seam_plan.vertical, profile, zmax, z_bottom, below_panel,
                     False, Part, Vector,
                 )
-                surface_horizontal_cutter = self._segmented_path_cutter(
+                surface_horizontal_cutter = self._continuous_path_cutter(
                     seam_plan.horizontal, profile, zmax, z_bottom, below_panel,
                     False, Part, Vector,
                 )
-                vertical_cutter = self._segmented_path_cutter(
+                vertical_cutter = self._continuous_path_cutter(
                     seam_plan.vertical, profile, zmax, z_bottom, below_panel,
                     True, Part, Vector,
                 )
-                horizontal_cutter = self._segmented_path_cutter(
+                horizontal_cutter = self._continuous_path_cutter(
                     seam_plan.horizontal, profile, zmax, z_bottom, below_panel,
                     True, Part, Vector,
                 )
-            surface_result = panel_shape.cut(surface_vertical_cutter)
-            surface_result = surface_result.cut(surface_horizontal_cutter)
-            result = panel_shape.cut(vertical_cutter)
-            result = result.cut(horizontal_cutter)
+            surface_tool = self._clean_crossing_tool(
+                surface_vertical_cutter, surface_horizontal_cutter
+            )
+            full_tool = self._clean_crossing_tool(
+                vertical_cutter, horizontal_cutter
+            )
+            surface_result = panel_shape.cut(surface_tool)
+            result = panel_shape.cut(full_tool)
         except Exception as error:
             raise SplitOperationError(
                 "Macro-based vertical/horizontal groove cut failed."
@@ -345,19 +349,19 @@ class MacroSplitCore:
                 Part,
                 Vector,
             )
-            surface_vertical = self._segmented_path_cutter(
+            surface_vertical = self._continuous_path_cutter(
                 seam_plan.vertical, profile, zmax, z_bottom, below_panel,
                 False, Part, Vector,
             )
-            surface_horizontal = self._segmented_path_cutter(
+            surface_horizontal = self._continuous_path_cutter(
                 seam_plan.horizontal, profile, zmax, z_bottom, below_panel,
                 False, Part, Vector,
             )
-            full_vertical = self._segmented_path_cutter(
+            full_vertical = self._continuous_path_cutter(
                 seam_plan.vertical, profile, zmax, z_bottom, below_panel,
                 True, Part, Vector,
             )
-            full_horizontal = self._segmented_path_cutter(
+            full_horizontal = self._continuous_path_cutter(
                 seam_plan.horizontal, profile, zmax, z_bottom, below_panel,
                 True, Part, Vector,
             )
@@ -366,20 +370,17 @@ class MacroSplitCore:
             # surface cuts for every ownership region. The production parts
             # below still use the unchanged region ownership and full-depth
             # cutters.
+            surface_tool = self._clean_crossing_tool(
+                surface_vertical, surface_horizontal
+            )
+            full_tool = self._clean_crossing_tool(full_vertical, full_horizontal)
             with operation(
                 "[4] Extract structural parts",
                 "surface result",
                 "surface vertical groove cut",
                 panel_shape,
             ):
-                surface_result = panel_shape.cut(surface_vertical)
-            with operation(
-                "[4] Extract structural parts",
-                "surface result",
-                "surface horizontal groove cut",
-                surface_result,
-            ):
-                surface_result = surface_result.cut(surface_horizontal)
+                surface_result = panel_shape.cut(surface_tool)
             final_parts = []
             region_solid_counts = []
             region_raw_solid_counts = []
@@ -423,7 +424,7 @@ class MacroSplitCore:
                     "full-depth seam cuts",
                     owned,
                 ):
-                    final_part = owned.cut(full_vertical).cut(full_horizontal)
+                    final_part = owned.cut(full_tool)
                 try:
                     final_part = final_part.removeSplitter()
                 except Exception as error:
@@ -733,83 +734,152 @@ class MacroSplitCore:
         return False
 
     @classmethod
-    def _segmented_path_cutter(
+    def _continuous_path_cutter(
         cls, path, profile, zmax, z_bottom, below_panel, full_depth, Part, Vector
     ):
-        """Build overlapping straight profile segments along one XY path."""
-        pieces = []
-        points = tuple(path.points)
-        for index, (first, second) in enumerate(zip(points, points[1:])):
-            dx = float(second.x_mm - first.x_mm)
-            dy = float(second.y_mm - first.y_mm)
-            length = math.hypot(dx, dy)
-            if length <= 0.0:
-                raise SplitOperationError("Seam path contains a zero-length segment.")
-            tx, ty = dx / length, dy / length
-            if path.axis == "vertical":
-                nx, ny = ty, -tx
-            elif path.axis == "horizontal":
-                nx, ny = -ty, tx
-            else:
-                raise SplitOperationError("Unsupported seam path axis.")
-            start_extension = (
-                profile.overlap_mm if index == 0 else profile.top_width_mm
-            )
-            end_extension = (
-                profile.overlap_mm
-                if index == len(points) - 2
-                else profile.top_width_mm
-            )
-            start_x = first.x_mm - tx * start_extension
-            start_y = first.y_mm - ty * start_extension
-            segment_length = length + start_extension + end_extension
-            half_top = profile.top_width_mm / 2.0
-            half_bottom = profile.bottom_width_mm / 2.0
-
-            def location(offset, z_value):
-                return (
-                    start_x + nx * offset,
-                    start_y + ny * offset,
-                    z_value,
-                )
-
-            cross_section = [
-                location(-half_top, zmax),
-                location(half_top, zmax),
-                location(half_top, z_bottom),
-            ]
-            if full_depth:
-                slot_left = half_bottom
-                slot_right = half_bottom + profile.bottom_width_mm
-                cross_section.extend(
-                    (
-                        location(slot_right, z_bottom),
-                        location(slot_right, below_panel),
-                        location(slot_left, below_panel),
-                        location(slot_left, z_bottom),
-                    )
-                )
-            else:
-                cross_section.append(location(half_bottom, z_bottom))
-            pieces.append(
-                cls._extruded_profile(
-                    tuple(cross_section),
-                    Vector(tx * segment_length, ty * segment_length, 0.0),
-                    Part,
-                    Vector,
-                )
-            )
-        if not pieces:
-            raise SplitOperationError("Seam path contains no cutter segments.")
+        """Build one validated continuous ribbon and extrude it once."""
+        # Accepted routes already terminate on the panel boundary or at the
+        # intended artistic opening.  Extending them by the old 20 mm macro
+        # overlap created oversized offset loops on tight repair candidates.
+        points = cls._clean_master_points(path, 0.0)
+        half_top = profile.top_width_mm / 2.0
+        half_bottom = profile.bottom_width_mm / 2.0
+        top_wire = cls._ribbon_wire(
+            points, -half_top, profile.top_width_mm, zmax, path.axis, Part, Vector
+        )
+        bottom_wire = cls._ribbon_wire(
+            points, half_bottom, profile.bottom_width_mm,
+            z_bottom, path.axis, Part, Vector
+        )
         try:
-            cutter = pieces[0].multiFuse(pieces[1:]) if len(pieces) > 1 else pieces[0]
+            try:
+                cutter = Part.makeLoft([top_wire, bottom_wire], True)
+            except Exception:
+                # A very tight artistic turn can defeat OCC's ruled loft even
+                # when the validated ribbon is sound.  Keep one continuous
+                # ribbon and use a constant-width wall for that candidate;
+                # never fall back to segment-wise prisms.
+                cutter = Part.Face(top_wire).extrude(
+                    Vector(0.0, 0.0, z_bottom - zmax)
+                )
+            if full_depth:
+                slot_face = Part.Face(bottom_wire)
+                slot = slot_face.extrude(
+                    Vector(0.0, 0.0, below_panel - z_bottom)
+                )
+                cutter = cutter.fuse(slot)
             try:
                 cutter = cutter.removeSplitter()
             except Exception:
                 pass
             return cutter
         except Exception as error:
-            raise SplitOperationError("Unable to unite segmented seam cutter.") from error
+            raise SplitOperationError(
+                "Unable to build continuous seam ribbon cutter."
+            ) from error
+
+    @classmethod
+    def _segmented_path_cutter(
+        cls, path, profile, zmax, z_bottom, below_panel, full_depth, Part, Vector
+    ):
+        """Backward-compatible name for the V7.10 continuous implementation."""
+        return cls._continuous_path_cutter(
+            path, profile, zmax, z_bottom, below_panel, full_depth, Part, Vector
+        )
+
+    @staticmethod
+    def _clean_master_points(path, extension):
+        """Extend, deduplicate, and simplify the accepted seam master curve."""
+        raw = tuple((float(point.x_mm), float(point.y_mm)) for point in path.points)
+        points = []
+        for point in raw:
+            if not points or math.dist(point, points[-1]) > 1.0e-6:
+                points.append(point)
+        if len(points) < 2:
+            raise SplitOperationError("Continuous seam requires two points.")
+        simplified = [points[0]]
+        for index, point in enumerate(points[1:-1], start=1):
+            previous = simplified[-1]
+            following = points[index + 1]
+            first = (point[0] - previous[0], point[1] - previous[1])
+            second = (following[0] - point[0], following[1] - point[1])
+            cross = abs(first[0] * second[1] - first[1] * second[0])
+            if cross > 1.0e-5:
+                simplified.append(point)
+        simplified.append(points[-1])
+        first, second = simplified[0], simplified[1]
+        last, before_last = simplified[-1], simplified[-2]
+        first_length = math.dist(first, second)
+        last_length = math.dist(last, before_last)
+        if first_length <= 1.0e-6 or last_length <= 1.0e-6:
+            raise SplitOperationError("Continuous seam has a zero-length end.")
+        extended = list(simplified)
+        extended[0] = (
+            first[0] - (second[0] - first[0]) * extension / first_length,
+            first[1] - (second[1] - first[1]) * extension / first_length,
+        )
+        extended[-1] = (
+            last[0] + (last[0] - before_last[0]) * extension / last_length,
+            last[1] + (last[1] - before_last[1]) * extension / last_length,
+        )
+        return tuple(extended)
+
+    @staticmethod
+    def _ribbon_wire(points, offset, width, z, axis, Part, Vector):
+        """Create one closed offset ribbon wire with no segment overlap."""
+        normals = []
+        for first, second in zip(points, points[1:]):
+            dx, dy = second[0] - first[0], second[1] - first[1]
+            length = math.hypot(dx, dy)
+            if length <= 1.0e-6:
+                raise SplitOperationError("Continuous seam contains a zero edge.")
+            if axis == "vertical":
+                normals.append((dy / length, -dx / length))
+            elif axis == "horizontal":
+                normals.append((-dy / length, dx / length))
+            else:
+                raise SplitOperationError("Unsupported seam path axis.")
+
+        def offset_points(distance):
+            result = []
+            for index, point in enumerate(points):
+                if index == 0:
+                    normal = normals[0]
+                elif index == len(points) - 1:
+                    normal = normals[-1]
+                else:
+                    nx = normals[index - 1][0] + normals[index][0]
+                    ny = normals[index - 1][1] + normals[index][1]
+                    length = math.hypot(nx, ny)
+                    normal = normals[index] if length <= 1.0e-6 else (nx / length, ny / length)
+                result.append((point[0] + normal[0] * distance, point[1] + normal[1] * distance))
+            return result
+
+        left = offset_points(offset)
+        right = offset_points(offset + width)
+        polygon = MacroSplitCore._remove_xy_loops(
+            tuple(left + list(reversed(right)))
+        )
+        if len(polygon) < 4 or MacroSplitCore._xy_self_intersects(polygon):
+            raise SplitOperationError("Continuous seam ribbon self-intersects.")
+        vectors = tuple(Vector(x, y, z) for x, y in polygon)
+        wire = Part.makePolygon(vectors + (vectors[0],))
+        if len(tuple(wire.Edges)) != len(polygon):
+            raise SplitOperationError("Continuous seam ribbon has duplicate edges.")
+        return Part.Wire(wire.Edges)
+
+    @staticmethod
+    def _clean_crossing_tool(first, second):
+        """Fuse both canonical seam tools once and remove internal splitters."""
+        try:
+            tool = first.fuse(second)
+            try:
+                tool = tool.removeSplitter()
+            except Exception:
+                pass
+            return tool
+        except Exception as error:
+            raise SplitOperationError("Canonical seam crossing tool failed.") from error
 
     @staticmethod
     def _validate_seam_plan(seam_plan, cut_x, cut_y):
